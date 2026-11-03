@@ -93,6 +93,18 @@ int prolapse_write_attempt(FILE *out, const prolapse_attempt_record_t *r)
     return ferror(out) ? -1 : 0;
 }
 
+int prolapse_write_control_start(FILE *out, const char *name)
+{
+    if (!out || !name)
+        return -1;
+    fputs("{\"record\":\"control\"", out);
+    json_str_field(out, "control", name);
+    json_str_field(out, "phase", "start");
+    fprintf(out, ",\"clock_src\":\"%s\"}\n", clock_src());
+    fflush(out);
+    return ferror(out) ? -1 : 0;
+}
+
 int prolapse_write_control(FILE *out, const char *name, uint64_t attempts,
                            uint64_t both_zero, uint64_t expected, int pass,
                            const char *detail)

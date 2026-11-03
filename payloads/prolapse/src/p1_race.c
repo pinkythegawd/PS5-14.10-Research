@@ -466,6 +466,10 @@ static int serialized_control(p1_pool_t *pool, const prolapse_config_t *cfg,
     (void)prolapse_config_get_u32(cfg, "race.control_rounds", &rounds);
     (void)prolapse_config_get_u32(cfg, "linger.park_timeout_us",
                                   &park_timeout);
+    if (prolapse_write_control_start(out, "serialized") != 0) {
+        snprintf(why, why_len, "JSONL write failed");
+        return -1;
+    }
 
     for (i = 0; i < rounds; i++) {
         p1_round_t r;
@@ -576,6 +580,10 @@ static int generation_control(p1_pool_t *pool, const prolapse_config_t *cfg,
     (void)prolapse_config_get_u32(cfg, "race.control_rounds", &rounds);
     (void)prolapse_config_get_u32(cfg, "linger.park_timeout_us",
                                   &park_timeout);
+    if (prolapse_write_control_start(out, "generation") != 0) {
+        snprintf(why, why_len, "JSONL write failed");
+        return -1;
+    }
 
     for (i = 0; i < rounds; i++) {
         p1_round_t r;
@@ -642,33 +650,50 @@ static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
     int n_assign = pool->max_threads + 2;
     uint64_t hits_before = pool->cap_hits;
     uint64_t cap_delta;
+    int creates_ok = 0;
+    int shortfall = 0;
     int i;
 
+    if (prolapse_write_control_start(out, "cap") != 0) {
+        snprintf(why, why_len, "JSONL write failed");
+        return -1;
+    }
     memset(jobs, 0, sizeof(jobs));
+    /* Create batch: every outcome is either a job created on a worker or a
+     * cap trip (pool full).  A pthread_create failure is neither, so
+     * creates_ok falls short of max_threads+2 and the shortfall assert
+     * below fires. */
     for (i = 0; i < n_assign; i++) {
         p1_job_t *job = NULL;
         int index = pool_assign(pool, cpu, &job);
-        if (i < pool->max_threads) {
-            if (index < 0) {
-                snprintf(why, why_len,
-                         "cap control: assignment %d/%d failed before the cap",
-                         i + 1, n_assign);
-                goto release;
-            }
-            jobs[i] = job;
-            indexes[i] = index;
-        } else if (index >= 0) {
-            snprintf(why, why_len,
-                     "cap control: assignment %d/%d succeeded; the cap did "
-                     "not trip", i + 1, n_assign);
-            goto release;
+        if (index >= 0) {
+            jobs[creates_ok] = job;
+            indexes[creates_ok] = index;
+            creates_ok++;
+        } else if (pool->count >= pool->max_threads) {
+            creates_ok++;
         }
     }
     cap_delta = pool->cap_hits - hits_before;
-    if (cap_delta < 2) {
+    if (creates_ok != pool->max_threads + 2) {
+        (void)prolapse_write_control(out, "cap", (uint64_t)creates_ok,
+                                     cap_delta,
+                                     (uint64_t)(pool->max_threads + 2), 0,
+                                     "create shortfall");
         snprintf(why, why_len,
-                 "cap control: cap_hits advanced by %llu, expected >=2",
-                 (unsigned long long)cap_delta);
+                 "cap control: creates_ok=%d/%d cap_hits_delta=%llu; worker "
+                 "creation fell short of the full batch",
+                 creates_ok, n_assign, (unsigned long long)cap_delta);
+        shortfall = 1;
+        goto release;
+    }
+    if (cap_delta < 2) {
+        (void)prolapse_write_control(out, "cap", (uint64_t)creates_ok,
+                                     cap_delta, 2, 0, "delta < 2");
+        snprintf(why, why_len,
+                 "cap control: creates_ok=%d/%d, cap_hits advanced by %llu, "
+                 "expected >=2",
+                 creates_ok, n_assign, (unsigned long long)cap_delta);
         goto release;
     }
     for (i = 0; i < pool->max_threads; i++)
@@ -694,22 +719,22 @@ static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
                  pool->parked_live);
         return -1;
     }
-    if (prolapse_write_control(out, "cap", (uint64_t)n_assign, cap_delta, 2,
+    if (prolapse_write_control(out, "cap", (uint64_t)creates_ok, cap_delta, 2,
                                1,
-                               "max_threads+2 assignments must trip the cap")
+                               "max_threads+2 create batch; cap_hits delta>=2")
         != 0) {
         snprintf(why, why_len, "JSONL write failed");
         return -1;
     }
-    printf("[control] cap PASS max_threads=%d assignments=%d "
-           "cap_hits_delta=%llu drained=%d\n", pool->max_threads, n_assign,
-           (unsigned long long)cap_delta, pool->max_threads);
+    printf("[control] cap PASS max_threads=%d creates_ok=%d/%d "
+           "cap_hits_delta=%llu drained=%d\n", pool->max_threads, creates_ok,
+           n_assign, (unsigned long long)cap_delta, pool->max_threads);
     return 0;
 
 release:
     for (i = 0; i < n_assign && jobs[i]; i++)
         __atomic_store_n(&jobs[i]->go, 1, __ATOMIC_RELEASE);
-    return -1;
+    return shortfall ? -2 : -1;
 }
 
 static int parking_preflight(p1_pool_t *pool, int cpu,
@@ -877,11 +902,19 @@ int prolapse_p1_run(prolapse_config_t *cfg)
         }
     }
     if (want_control(cfg->control, "cap")) {
-        if (cap_control(&pool, cpu_a, out, why, sizeof(why)) != 0) {
-            fprintf(stderr,
-                    "prolapse p1: verdict=cap_control_failed rc=2: %s\n",
-                    why);
-            rc = 2;
+        int cap_rc = cap_control(&pool, cpu_a, out, why, sizeof(why));
+        if (cap_rc != 0) {
+            if (cap_rc == -2) {
+                fprintf(stderr,
+                        "prolapse p1: verdict=cap_create_shortfall rc=5: "
+                        "%s\n", why);
+                rc = 5;
+            } else {
+                fprintf(stderr,
+                        "prolapse p1: verdict=cap_control_failed rc=2: "
+                        "%s\n", why);
+                rc = 2;
+            }
             goto drain;
         }
     }

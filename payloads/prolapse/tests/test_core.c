@@ -153,10 +153,31 @@ static void test_config(void)
     }
 }
 
+static void test_jsonl_control_start(void)
+{
+    FILE *f = tmpfile();
+    char buf[1024];
+    size_t n;
+
+    assert(f != NULL);
+    assert(prolapse_write_control_start(f, "cap") == 0);
+    assert(prolapse_write_control(f, "cap", 66, 2, 2, 1, "delta >= 2") == 0);
+    rewind(f);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    assert(strstr(buf, "{\"record\":\"control\",\"control\":\"cap\","
+                       "\"phase\":\"start\"") != NULL);
+    assert(strstr(buf, "}\n") != NULL);
+    assert(strstr(buf, "start") < strstr(buf, "\"attempts\":66"));
+}
+
 int main(void)
 {
     test_classify();
     test_jsonl();
+    test_jsonl_control_start();
     test_dead_end();
     test_config();
     printf("test_core: ok\n");

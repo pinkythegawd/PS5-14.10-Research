@@ -91,32 +91,44 @@ Exit codes distinguish the failure kinds with a one-line verdict:
 - `4` = `verdict=generation_control_failed`: the bumped-generation delete did
   not reproduce `0x80020003`. Kept distinct from 2 because the generation check
   is the one 14.10 ground truth the whole race depends on.
+- `5` = `verdict=cap_create_shortfall`: the cap create batch fell short of
+  `max_threads+2` outcomes — a worker creation failed before the cap could be
+  exercised.
 
 ### Controls (run before any race)
 
 `--control all|serialized|generation|cap` selects which controls run (default
 `all` = serialized, then generation, then cap). A failed control aborts with
 its own one-line verdict (`verdict=serialized_control_failed` rc=2 /
-`verdict=generation_control_failed` rc=4 / `verdict=cap_control_failed` rc=2),
-distinct from the preflight verdicts.
+`verdict=generation_control_failed` rc=4 / `verdict=cap_control_failed` rc=2 /
+`verdict=cap_create_shortfall` rc=5), distinct from the preflight verdicts.
+Every control writes a `record:"control"` line with `phase:"start"` before its
+body runs and a closing `record:"control"` line after it — both flushed, so
+JSONL line order is evidence of dispatch order.
 
 - Serialized: one caller, two sequential deletes, same id. Expect `~0`
-  `both_zero`; any `both_zero` aborts the run — P1 would then be counting
-  something other than the race. The stop is unconditional and cannot be
-  disabled. Every attempt emits one JSONL attempt line
-  (`strategy:"serialized_control"`, `control:true`) and the run ends with the
-  outcome histogram on stdout.
+  `both_zero`; any `both_zero` aborts the whole run before generation and cap
+  (`verdict=serialized_control_failed` rc=2, after the closing control line
+  with `pass:false`) — P1 would then be counting something other than the
+  race. The stop is unconditional and cannot be disabled. Every attempt emits
+  one JSONL attempt line (`strategy:"serialized_control"`, `control:true`) and
+  the run ends with the outcome histogram on stdout.
 - Generation: bump the generation bits of the id before the second delete and
   delete the bumped id; the loser must return `0x80020003`. If that error does
   not reproduce, the run aborts with `verdict=generation_control_failed` rc=4 —
   the generation check is the one 14.10 ground truth the whole race depends on.
-- Cap: assign `max_threads + 2` no-op jobs from the worker pool. The first
-  `max_threads` must succeed and the last two must trip the cap
-  (`pool_assign` returns `-1`, `cap_hits` advances by >=2). No AIO syscall is
-  issued by the no-op jobs. It fully drains before returning: every assigned
-  worker must finish and clear `active`, and `parked_live` must be 0. As a
-  standalone mode `--control cap` skips preflight 4 (it does not need linger)
-  so the cap trip is host-verifiable too.
+- Cap: run a create batch of `max_threads + 2` assignments. Every outcome is
+  either a job created on a worker or a cap trip (pool full); `creates_ok`
+  counts both. Two asserts, in order: `creates_ok == max_threads + 2` — its own
+  verdict `verdict=cap_create_shortfall` rc=5 (a worker creation failed before
+  the cap could be exercised); then the cap-logic assert — `cap_hits` must
+  advance by `>= 2` (`verdict=cap_control_failed` rc=2). Both numbers
+  (`creates_ok`, `cap_hits_delta`) are reported in the closing control line
+  and on stdout. No AIO syscall is issued by the no-op jobs. It fully drains
+  before returning: every assigned worker must finish and clear `active`, and
+  `parked_live` must be 0. As a standalone mode `--control cap` skips
+  preflight 4 (it does not need linger) so the cap trip is host-verifiable
+  too.
 
 All controls also emit one `record:"control"` summary line and must pass.
 

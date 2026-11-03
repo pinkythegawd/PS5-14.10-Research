@@ -408,9 +408,11 @@ need a zone.
 - `SO_LINGER {0,0}` releases a parked thread on demand.
 - `--max-threads` default 64; exceeding the cap fails the run loudly.
 - The cap trip is validated in-build by the cap control (`--control cap`):
-  `max_threads + 2` no-op assignments, the last two must trip; no AIO syscall
-  is issued by the no-op jobs; host-verifiable (cap-only mode skips preflight
-  4).
+  a create batch of `max_threads + 2` assignments; `creates_ok` counts jobs
+  created plus cap trips and must equal `max_threads + 2` (own verdict
+  `cap_create_shortfall` rc=5), then `cap_hits` must advance by `>= 2`
+  (cap-logic assert, rc=2); both numbers reported; no AIO syscall is issued by
+  the no-op jobs; host-verifiable (cap-only mode skips preflight 4).
 - Drain to zero at teardown, asserted before P2's frozen pass and before exit.
 - Every round line prints `parked_live`.
 
@@ -446,10 +448,11 @@ hits. It is not reconstructed from logs later.
 | 2 | `preflight_failed` (real console preflight failure), `serialized_control_failed`, `cap_control_failed`, or config/drain failure |
 | 3 | `preflight_unavailable_in_build` (host build: preflight 4 cannot run; AIO is ENOSYS by design) |
 | 4 | `generation_control_failed`: the bumped-generation delete did not reproduce `0x80020003` |
+| 5 | `cap_create_shortfall`: the cap create batch fell short of `max_threads+2` outcomes — a worker creation failed before the cap could be exercised |
 
 Every failing path prints a one-line `verdict=... rc=N` on stderr. Codes 0-3
 are frozen as of this amendment; rc=4 is reserved for the generation control
-only.
+only; rc=5 is reserved for the cap create shortfall only.
 
 ## 11. P1/P2 implementation scope (this round)
 

@@ -99,6 +99,7 @@ const char *prolapse_outcome_name(prolapse_outcome_t outcome);
 /* jsonl.c */
 void prolapse_json_escape(FILE *out, const char *s);
 int prolapse_write_attempt(FILE *out, const prolapse_attempt_record_t *rec);
+int prolapse_write_control_start(FILE *out, const char *name);
 int prolapse_write_control(FILE *out, const char *name, uint64_t attempts,
                            uint64_t both_zero, uint64_t expected,
                            int pass, const char *detail);
