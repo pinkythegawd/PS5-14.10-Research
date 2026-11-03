@@ -178,3 +178,5 @@ Probe 353a settled why 661 killed: with SIGSYS ignored (`sigaction(12, SIG_IGN)`
 shared `nosys` trampoline that raises signal 12. So the single submit does not exist on this
 firmware, 669 is the only way into the queue, and every earlier argument about "the path
 that kills" was about an absent slot. See PR #99 and `docs/SYSCALL_ABSENT_VS_LETHAL.md`.
+
+See [EVIDENCE_REVIEW.md](EVIDENCE_REVIEW.md) for the submit-time-check versus post-lock-drop revalidation reconciliation.

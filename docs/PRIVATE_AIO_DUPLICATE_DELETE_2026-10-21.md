@@ -26,3 +26,5 @@ The broader 57a native-syscall survey, direct kldsym, and GPU msync probes all s
 ## Offline check
 
 The bundled Python runtime ran `tools/check_lua_syntax.py`: all 350 Lua 5.1 probes compiled, zero failures. This checks syntax only; it does not validate live ABI, race behavior, or safety.
+
+See [EVIDENCE_REVIEW.md](EVIDENCE_REVIEW.md) for why this duplicate-delete result is the control condition, not a refutation of the delete/delete race.
