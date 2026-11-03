@@ -537,6 +537,7 @@ Snapshot status below; the [source repository](https://github.com/pastawithpesto
 - **p156 "reproduction" on a second console — same false positive (corrected 2026-10-20):** the 14/14 `.length` = 81400 reports were the literal string length (814-char chunk × 100), not corruption. The OOM-death-vs-beacon-ordering data from that console's 17 runs remains valid ([issue #6](https://github.com/pastawithpesto/PS5-14.10-Jailbreak-Research/issues/6)).
 - **p160 (Relapse primitives) also confirmed dead on the second console** — independent reproduction of our PR #32 result (54/54, scope receiver `undefined`).
 - **CSSFontFace (CVE-2026-43715) measured on the console — a hang, not a crash (2026-10-22):** the trigger is reachable from the guide (probes p446-p450), but where the write-up predicts a use-after-free the WebProcess runs out of memory and dies. The fix's client snapshot holds strong references, so nothing is freed mid-iteration; see **Finding 10**. This lead is closed.
+- **FontFace workstream items 2-5 built, hardware runs pending (2026-11-03):** stability page (N≥50 self-recycling attempts), lifetime probe (hold/drop/gc/second arms), reclaim tag read-back (`fontface_tag.html`), and the p563-shape pointer-write tag proof (`fontface_addrof.html`) are built and logic-tested in the ps5-1410 tree; all console measurements await hardware runs — no numbers are fabricated. See "Reclaim identification and pointer-write tag proof" below.
 - **Kernel audit published** (their [KERNEL_AUDIT.md](https://github.com/pastawithpesto/PS5-14.10-Jailbreak-Research/blob/master/docs/KERNEL_AUDIT.md)): Tier-1 candidates CVE-2026-7270 (assessed in this repo), CVE-2026-45251 (poll/select UAF, not yet assessed here), and CVE-2024-43102 (umtx — patch status reopened by our PR #41: `_umtx_op` is 454 and alive; earlier "umtx" tests hit 557).
 - **Length-window audit** ([WEBKIT_LENGTH_WINDOW_AUDIT.md](WEBKIT_LENGTH_WINDOW_AUDIT.md)) — analyzed the false positive; its capacity question dissolves. The p161 probe it inspired remains correct (PR #43 fixed its blob construction) and now tests whether the correct-strings groom corrupts at all.
 
@@ -618,6 +619,64 @@ BLOCKED by Timer RELEASE_ASSERT.**
    measurements: (a) the leaked pointers are engine-owned (no self-address
    yet), and (b) the `setStatus` continuation dies on the forged `m_thread`
    unless a valid `Thread::current()` lands at offset 176.
+
+## Reclaim identification and pointer-write tag proof — items 4/5 of the FontFace workstream (2026-11-03)
+
+Build-side answers for "name the allocator, state the size class, prove the
+reclaim with a tag read-back before forging" (item 4) and "identify the
+operation that writes a pointer into the reclaimed region at a readable
+offset, prove it with a tag, then produce addrof(obj)" (item 5). Artifacts in
+the ps5-1410 tree: `webkit/CSSFONT_ORACLE.md` ("Reclaim identification" and
+"Pointer-write operation and honest addrof status" sections); pages
+`fontface_tag.html` and `fontface_addrof.html` (frontend/host-index, copied to
+the guide's host build); report tools `tag_report.py`, `addr_report.py` with
+logic tests. **No console numbers here: the pages and tools are built and
+logic-tested (8 suites, all green), the hardware runs for items 2-5 are
+pending the console.**
+
+**Allocator: bmalloc FastMalloc.** Both public repos converge on the port
+facts: PLAYSTATION builds compile IsoHeap and Gigacage out
+(`Source/cmake/OptionsPlayStation.cmake` leaves `USE_ISO_MALLOC` off), so
+`CSSFontFace` and `ArrayBuffer` backing stores share bmalloc arenas and size
+classes. Cross-type reclaim is an allocator property of this build, not a bug
+to exploit; the earlier in-tree observation that an ArrayBuffer spray "did not
+reclaim" on the `setStatus` entry is explained by the continuation dying on
+the cross-type garbage (pastawithpesto's Timer `RELEASE_ASSERT` at
+`Timer.cpp:469`; `m_status` at +130, `m_timeoutTimer` at 144-191, `m_thread`
+at +176), not by allocator hermeticity.
+
+**Size class: 192 bytes.** Measured upstream on this build (ng643 Finding 13:
+192-byte AB backing store takes the freed chunk) and consistent with the
+double-reclaim measurement (exactly one second-batch face flips
+`error→loaded`).
+
+**Tag read-back, per entry point.** The default reclaim candidate is the
+ArrayBuffer backing store, but on the `setStatus` entry the continuation
+executes on the reclaimed slot itself: an AB reclaim kills the process before
+JS can ever read the buffer back. The justified alternative there is the
+same-type tag: `fontface_tag.html` sprays the second batch with `e0..eN`-tagged
+families and reports which family the stale write flipped — the hit index
+against allocation order is the reuse evidence (index 0 = LIFO tcache reuse).
+On the `FontFaceSet::load` entry (the p563 shape) the process survives the
+continuation, so the AB read-back is available again: `fontface_addrof.html`
+sprays 0x41-filled buffers across 19 size classes (8..2048, 192 included),
+scans at 60/400/1500 ms with synchronous-XHR beacons, and `?control=1` skips
+the free as the ALL-CLEAN arm. `addr_report.py` extracts hit buffers and
+checks the documented slots.
+
+**Pointer-write operations identified (p563 continuation):** refcount `1` at
++0x00, the `WeakHashSetImpl` pointer at +0x58 (`CSSFontFace::addClient`), and
+the `WeakPtrImpl` pointer at +0x68 (`setWrapper`) — engine-owned objects, at
+readable offsets of the 192-byte chunk.
+
+**Honest addrof status:** a full hit proves the engine wrote into our buffer;
+it does **not** give `addrof(obj)`. The leaked values point at engine-owned
+`WeakHashSetImpl`/`WeakPtrImpl` objects, not at a JSCell, and no slot in the
+chunk holds the address of a JS object — ng643's own verdict on Finding 13
+applies: "Until a self-address exists, this is a disclosure, not a corruption
+primitive." The JS face is one indirection away (through the `WeakPtrImpl`
+pointee); closing that gap is the next round's work. No fakeobj, no RIP, no
+lane-2 claim in this round.
 
 ## Attribution
 
