@@ -14,6 +14,23 @@ No P1/P2 value is `CONFIRMED_ON_HW` yet.
 Provenance vocabulary used below: `CONFIRMED_IN_IDA`, `CONFIRMED_ON_HW`, and
 `ASSUMED`. A value is never promoted without a matching artifact.
 
+## Toolchain pin (2026-11-03)
+
+Cross-run comparison (windows, park times, codegen-sensitive race behavior) is
+only valid within one toolchain. Any change to any row below invalidates every
+P1/P2/P3 timing comparison made before it; update this block and re-baseline
+before the next run. A toolchain change is a ledger change, not a silent
+rebuild.
+
+| Component | Pinned value |
+|---|---|
+| WSL distro | Kali GNU/Linux Rolling (Debian base) |
+| WSL host kernel | 6.18.33.2-microsoft-standard-WSL2 |
+| `clang --version` (host) | not installed in the WSL distro; console ELF builds use the PS5_PAYLOAD_SDK clang |
+| PS5_PAYLOAD_SDK | absent from this WSL distro on 2026-11-03 (was in the former Debian distro); reinstall before `make` ELF builds |
+| `gcc --version` (make check) | gcc (Debian 16.2.0-1) 16.2.0 |
+| `python3 --version` (generator/checks) | Python 3.14.7 |
+
 ## Runtime keys
 
 | Key | Default | Range | Phase | 14.10 status | Source |

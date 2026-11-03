@@ -1,3 +1,8 @@
+# All paths: detect text, normalize to LF in the index and working tree.
+# This neutralizes core.autocrlf on Windows checkouts.
+* text=auto eol=lf
+
 # Vendored references must stay byte-identical (SHA record). Never apply
-# EOL conversion, diff heuristics, or formatters to them.
-exploit/prolapse/reference/* -text
+# EOL conversion, diff heuristics, or formatters to them. This override
+# comes after the global rule and wins.
+exploit/prolapse/reference/** -text
