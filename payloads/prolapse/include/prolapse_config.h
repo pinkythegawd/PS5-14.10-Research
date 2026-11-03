@@ -17,7 +17,7 @@ static const prolapse_ledger_entry_t g_prolapse_ledger[] = {
     {"race.stagger_us", "0", "0", "P1"},
     {"race.seed", "0", "0", "P1"},
     {"race.max_threads", "64", "64", "P1"},
-    {"race.control_rounds", "128", "128", "P1"},
+    {"race.control_rounds", "500", "500", "P1"},
     {"race.loss_threshold", "1000", "1000", "P1"},
     {"race.stop_on_first_win", "1", "1", "P1"},
     {"race.spin_limit", "800000000", "800000000", "P1"},

@@ -42,7 +42,7 @@ rebuild.
 | `race.stagger_us` | 0 | 0-500 | P1 | design | this document |
 | `race.seed` | 0 | 0-18446744073709551615 | P1 | design | 0 = fixed schedule |
 | `race.max_threads` | 64 | 2-256 | P1 | design | hard parked/active cap |
-| `race.control_rounds` | 128 | 8-100000 | P1 | design | serialized and generation controls |
+| `race.control_rounds` | 500 | 8-100000 | P1 | design | serialized and generation controls; slice requires >=500 attempts |
 | `race.loss_threshold` | 1000 | 1-5000000 | P1 | design | A6 dead-end append threshold |
 | `race.stop_on_first_win` | 1 | 0-1 | P1 | design | A5 default on |
 | `race.spin_limit` | 800000000 | 1-4000000000 | P1 | gist | gist 543 |

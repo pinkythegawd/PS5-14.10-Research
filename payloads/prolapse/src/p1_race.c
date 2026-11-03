@@ -11,7 +11,6 @@
 #include <unistd.h>
 
 #define P1_MAX_WORKERS PROLAPSE_MAX_THREADS
-#define P1_MAX_WINDOW_SAMPLES 2000000u
 
 typedef struct {
     volatile int go;
@@ -59,27 +58,7 @@ typedef struct {
     int peers[PROLAPSE_MAX_BATCH];
 } p1_round_t;
 
-typedef struct {
-    const char *name;
-    uint64_t attempts;
-    uint64_t wins;
-    uint64_t esrch_main;
-    uint64_t esrch_racer;
-    uint64_t both_esrch;
-    uint64_t timeouts;
-    uint64_t other;
-    uint64_t cap_hits;
-    uint64_t *windows;
-    size_t window_count;
-    size_t window_cap;
-    uint64_t dropped_windows;
-    uint64_t p50;
-    uint64_t p90;
-    uint64_t p99;
-} p1_stats_t;
-
 static int g_call_seq;
-static uint64_t g_round_counter;
 static uint64_t g_attempt_seq;
 static char g_aio_buf[0x1000];
 
@@ -472,10 +451,12 @@ static uint32_t bump_generation(prolapse_aio_id_t id)
 }
 
 static int serialized_control(p1_pool_t *pool, const prolapse_config_t *cfg,
-                              int cpu, FILE *out, char *why, size_t why_len)
+                              int cpu, FILE *out, uint64_t run_id,
+                              char *why, size_t why_len)
 {
     uint32_t rounds = 0;
     uint32_t park_timeout = 2000000;
+    uint64_t hist[PROLAPSE_OUTCOME_OTHER + 1] = {0};
     uint64_t both_zero = 0;
     uint32_t i;
     (void)prolapse_config_get_u32(cfg, "race.control_rounds", &rounds);
@@ -488,9 +469,14 @@ static int serialized_control(p1_pool_t *pool, const prolapse_config_t *cfg,
         long ret1 = -1, ret2 = -1;
         int timed1 = 0, timed2 = 0;
         int peer = -1;
+        uint64_t t_start, t_end, window_us = 0;
+        prolapse_outcome_t outcome;
+        prolapse_attempt_record_t rec;
+
         if (prepare_round(&r, 1, cfg, why, why_len) != 0)
             return -1;
         peer = r.peers[0];
+        t_start = prolapse_now_us();
         if (one_delete(pool, cpu, r.ids[0], &peer, park_timeout, &err1, &ret1,
                        &timed1, why, why_len) != 0) {
             round_close_peers(&r);
@@ -503,15 +489,53 @@ static int serialized_control(p1_pool_t *pool, const prolapse_config_t *cfg,
                 return -1;
             }
         }
+        t_end = prolapse_now_us();
+        if (t_end > t_start)
+            window_us = t_end - t_start;
         r.peers[0] = peer;
         round_close_peers(&r);
-        if (err1 == 0 && err2 == 0)
+
+        if (timed1 || timed2)
+            outcome = PROLAPSE_OUTCOME_TIMEOUT;
+        else
+            outcome = prolapse_classify((int)ret1, (int)ret2, err1, err2);
+        if (outcome == PROLAPSE_OUTCOME_BOTH_ZERO)
             both_zero++;
+        hist[outcome]++;
+
+        memset(&rec, 0, sizeof(rec));
+        rec.run_id = run_id;
+        rec.seq = ++g_attempt_seq;
+        rec.round = i + 1;
+        rec.round_id = 0;
+        rec.strategy = "serialized_control";
+        rec.id = r.ids[0];
+        rec.slot = 0;
+        rec.batch_size = 1;
+        rec.t_start_us = t_start;
+        rec.t_end_us = t_end;
+        rec.window_us = window_us;
+        rec.main_ret = (int)ret1;
+        rec.main_err = timed1 ? INT_MIN : err1;
+        rec.racer_ret = (int)ret2;
+        rec.racer_err = (timed1 || timed2) ? INT_MIN : err2;
+        rec.main_seq = 0;
+        rec.racer_seq = 0;
+        rec.parked_live = pool->parked_live;
+        rec.outcome = outcome;
+        rec.frozen = 0;
+        rec.candidate = 0;
+        rec.control = 1;
+        if (prolapse_write_attempt(out, &rec) != 0) {
+            snprintf(why, why_len, "JSONL write failed");
+            return -1;
+        }
+
         if (i < 8 || (i + 1) == rounds) {
             printf("[control] serialized %u/%u id=0x%08x err1=%d err2=%d "
-                   "ret1=%ld ret2=%ld both_zero=%llu\n",
+                   "ret1=%ld ret2=%ld outcome=%s\n",
                    i + 1, rounds, (unsigned)r.ids[0], err1, err2, ret1, ret2,
-                   (unsigned long long)both_zero);
+                   prolapse_outcome_name(outcome));
         }
     }
     if (prolapse_write_control(out, "serialized", rounds, both_zero, 0,
@@ -527,6 +551,14 @@ static int serialized_control(p1_pool_t *pool, const prolapse_config_t *cfg,
     }
     printf("[control] serialized PASS attempts=%u both_zero=%llu\n", rounds,
            (unsigned long long)both_zero);
+    printf("[control] serialized histogram both_zero=%llu esrch_main=%llu "
+           "esrch_racer=%llu both_esrch=%llu timeout=%llu other=%llu\n",
+           (unsigned long long)hist[PROLAPSE_OUTCOME_BOTH_ZERO],
+           (unsigned long long)hist[PROLAPSE_OUTCOME_ESRCH_MAIN],
+           (unsigned long long)hist[PROLAPSE_OUTCOME_ESRCH_RACER],
+           (unsigned long long)hist[PROLAPSE_OUTCOME_BOTH_ESRCH],
+           (unsigned long long)hist[PROLAPSE_OUTCOME_TIMEOUT],
+           (unsigned long long)hist[PROLAPSE_OUTCOME_OTHER]);
     return 0;
 }
 
@@ -661,401 +693,10 @@ static int parking_preflight(p1_pool_t *pool, int cpu,
     return 0;
 }
 
-static int cmp_u64(const void *a, const void *b)
-{
-    uint64_t x = *(const uint64_t *)a;
-    uint64_t y = *(const uint64_t *)b;
-    return x < y ? -1 : (x > y ? 1 : 0);
-}
-
-static void stats_init(p1_stats_t *s, const char *name, uint64_t rounds,
-                       uint32_t batch)
-{
-    size_t cap;
-    memset(s, 0, sizeof(*s));
-    s->name = name;
-    cap = (size_t)rounds * (size_t)batch;
-    if (cap == 0)
-        cap = 1;
-    if (cap > P1_MAX_WINDOW_SAMPLES)
-        cap = P1_MAX_WINDOW_SAMPLES;
-    s->windows = (uint64_t *)calloc(cap, sizeof(uint64_t));
-    s->window_cap = s->windows ? cap : 0;
-}
-
-static void stats_add_window(p1_stats_t *s, uint64_t window_us)
-{
-    if (s->window_count < s->window_cap) {
-        s->windows[s->window_count++] = window_us;
-    } else {
-        s->dropped_windows++;
-    }
-}
-
-static void stats_finish(p1_stats_t *s)
-{
-    if (!s->windows || s->window_count == 0)
-        return;
-    qsort(s->windows, s->window_count, sizeof(uint64_t), cmp_u64);
-    s->p50 = s->windows[(s->window_count * 50) / 100];
-    s->p90 = s->windows[(s->window_count * 90) / 100];
-    s->p99 = s->windows[(s->window_count * 99) / 100];
-    if (s->p99 == 0)
-        s->p99 = s->windows[s->window_count - 1];
-}
-
-static int run_strategy(p1_pool_t *pool, prolapse_config_t *cfg,
-                        const char *strategy, FILE *out, uint64_t run_id,
-                        int cpu_a, int cpu_b, int *stop_all,
-                        char *why, size_t why_len)
-{
-    p1_stats_t stats;
-    uint32_t rounds = 0, batch = 1, loss_threshold = 1000, stagger_us = 0;
-    uint32_t linger_park_timeout = 2000000;
-    uint32_t wait_us = 1000000;
-    int dead_end_written = 0;
-    uint32_t round;
-
-    (void)prolapse_config_get_u32(cfg, "race.rounds", &rounds);
-    (void)prolapse_config_get_u32(cfg, "race.batch", &batch);
-    (void)prolapse_config_get_u32(cfg, "race.loss_threshold", &loss_threshold);
-    (void)prolapse_config_get_u32(cfg, "race.stagger_us", &stagger_us);
-    (void)prolapse_config_get_u32(cfg, "linger.park_timeout_us",
-                                  &linger_park_timeout);
-    (void)prolapse_config_get_u32(cfg, "race.terminal_timeout_us", &wait_us);
-    stats_init(&stats, strategy, rounds, batch);
-    if (!stats.windows) {
-        snprintf(why, why_len, "out of memory for window samples");
-        return -1;
-    }
-
-    for (round = 0; round < rounds; round++) {
-        p1_round_t r;
-        p1_job_t *jm = NULL, *jr = NULL;
-        int im, ir;
-        int main_cpu, racer_cpu;
-        int main_done, racer_done;
-        uint32_t slot;
-        uint64_t round_id;
-        uint64_t t_start = 0, t_end = 0, window_us = 0;
-        uint32_t wins_this_round = 0;
-        int any_win = 0;
-        prolapse_outcome_t outcomes[PROLAPSE_MAX_BATCH];
-        int main_errs[PROLAPSE_MAX_BATCH];
-        int racer_errs[PROLAPSE_MAX_BATCH];
-        int main_rets[PROLAPSE_MAX_BATCH];
-        int racer_rets[PROLAPSE_MAX_BATCH];
-        int main_seqs[PROLAPSE_MAX_BATCH];
-        int racer_seqs[PROLAPSE_MAX_BATCH];
-
-        if (strcmp(strategy, "same_barrier") == 0) {
-            main_cpu = racer_cpu = cpu_a;
-        } else {
-            main_cpu = cpu_a;
-            racer_cpu = cpu_b;
-        }
-        if (prepare_round(&r, batch, cfg, why, why_len) != 0)
-            goto fail;
-
-        im = pool_assign(pool, main_cpu, &jm);
-        if (im < 0) {
-            snprintf(why, why_len,
-                     "thread cap reached: max_threads=%d active+parked=%d",
-                     pool->max_threads, pool->count);
-            round_close_peers(&r);
-            goto cap_fail;
-        }
-        ir = pool_assign(pool, racer_cpu, &jr);
-        if (ir < 0) {
-            /* Let the already-assigned main worker retire before reporting
-             * the cap; otherwise the drain would see a live worker. */
-            jm->n = batch;
-            jm->peer_count = (int)batch;
-            for (slot = 0; slot < batch; slot++) {
-                jm->ids[slot] = r.ids[slot];
-                jm->peers[slot] = r.peers[slot];
-            }
-            __atomic_store_n(&jm->go, 1, __ATOMIC_RELEASE);
-            {
-                int md = pool_wait_done(jm, wait_us);
-                if (md == 0) {
-                    pool_mark_parked(pool, im);
-                    if (pool_release_parked(pool, im, jm, linger_park_timeout,
-                                            why, why_len) != 0) {
-                        /* Release closes peers one at a time; adopt the
-                         * job's table so we never re-close (fd reuse). */
-                        for (slot = 0; slot < batch; slot++)
-                            r.peers[slot] = jm->peers[slot];
-                        round_close_peers(&r);
-                        goto cap_fail;
-                    }
-                    for (slot = 0; slot < batch; slot++)
-                        r.peers[slot] = -1;
-                } else if (md == 1) {
-                    (void)pool_wait_idle(pool, im, 1000000);
-                }
-            }
-            snprintf(why, why_len,
-                     "thread cap reached: max_threads=%d active+parked=%d",
-                     pool->max_threads, pool->count);
-            round_close_peers(&r);
-            goto cap_fail;
-        }
-
-        for (slot = 0; slot < batch; slot++) {
-            jm->ids[slot] = r.ids[slot];
-            jr->ids[slot] = r.ids[slot];
-            jm->peers[slot] = r.peers[slot];
-            jr->peers[slot] = r.peers[slot];
-        }
-        jm->n = jr->n = batch;
-        jm->peer_count = jr->peer_count = (int)batch;
-
-        __atomic_store_n(&jm->go, 1, __ATOMIC_RELEASE);
-        if (strcmp(strategy, "split_stagger") == 0 && stagger_us > 0)
-            prolapse_sleep_us(stagger_us);
-        __atomic_store_n(&jr->go, 1, __ATOMIC_RELEASE);
-
-        main_done = pool_wait_done(jm, wait_us);
-        racer_done = pool_wait_done(jr, wait_us);
-        if (main_done == 0)
-            pool_mark_parked(pool, im);
-        if (racer_done == 0)
-            pool_mark_parked(pool, ir);
-
-        g_round_counter++;
-        round_id = run_id ^ (g_round_counter * 0x9E3779B97F4A7C15ull);
-        if (jm->t_start_us && jr->t_start_us)
-            t_start = jm->t_start_us < jr->t_start_us ? jm->t_start_us
-                                                      : jr->t_start_us;
-        else
-            t_start = jm->t_start_us ? jm->t_start_us : jr->t_start_us;
-        if (main_done == 1 && racer_done == 1) {
-            t_end = jm->t_end_us > jr->t_end_us ? jm->t_end_us : jr->t_end_us;
-        } else {
-            t_end = prolapse_now_us();
-        }
-        if (t_end > t_start)
-            window_us = t_end - t_start;
-
-        for (slot = 0; slot < batch; slot++) {
-            main_rets[slot] = (main_done == 1) ? (int)jm->ret : -1;
-            racer_rets[slot] = (racer_done == 1) ? (int)jr->ret : -1;
-            main_errs[slot] = (main_done == 1) ? jm->errs[slot] : INT_MIN;
-            racer_errs[slot] = (racer_done == 1) ? jr->errs[slot] : INT_MIN;
-            main_seqs[slot] = (main_done == 1) ? jm->seq : 0;
-            racer_seqs[slot] = (racer_done == 1) ? jr->seq : 0;
-            if (main_done != 1 || racer_done != 1) {
-                outcomes[slot] = PROLAPSE_OUTCOME_TIMEOUT;
-            } else {
-                outcomes[slot] = prolapse_classify(
-                    main_rets[slot], racer_rets[slot],
-                    main_errs[slot], racer_errs[slot]);
-            }
-            if (outcomes[slot] == PROLAPSE_OUTCOME_BOTH_ZERO) {
-                wins_this_round++;
-                any_win = 1;
-            }
-        }
-
-        for (slot = 0; slot < batch; slot++) {
-            prolapse_attempt_record_t rec;
-            memset(&rec, 0, sizeof(rec));
-            rec.run_id = run_id;
-            rec.seq = ++g_attempt_seq;
-            rec.round = round + 1;
-            rec.round_id = round_id;
-            rec.strategy = strategy;
-            rec.id = r.ids[slot];
-            rec.slot = slot;
-            rec.batch_size = batch;
-            rec.t_start_us = t_start;
-            rec.t_end_us = t_end;
-            rec.window_us = window_us;
-            rec.sys624_main_before = jm->s624_in;
-            rec.sys624_main_after = jm->s624_out;
-            rec.sys624_racer_before = jr->s624_in;
-            rec.sys624_racer_after = jr->s624_out;
-            rec.main_ret = main_rets[slot];
-            rec.main_err = main_errs[slot];
-            rec.racer_ret = racer_rets[slot];
-            rec.racer_err = racer_errs[slot];
-            rec.main_seq = main_seqs[slot];
-            rec.racer_seq = racer_seqs[slot];
-            rec.parked_live = pool->parked_live;
-            rec.outcome = outcomes[slot];
-            rec.frozen = any_win ? 1 : 0;
-            rec.candidate = outcomes[slot] == PROLAPSE_OUTCOME_BOTH_ZERO;
-            rec.control = 0;
-            if (prolapse_write_attempt(out, &rec) != 0) {
-                snprintf(why, why_len, "JSONL write failed");
-                round_close_peers(&r);
-                goto fail;
-            }
-
-            stats.attempts++;
-            stats_add_window(&stats, window_us);
-            switch (outcomes[slot]) {
-            case PROLAPSE_OUTCOME_BOTH_ZERO: stats.wins++; break;
-            case PROLAPSE_OUTCOME_ESRCH_MAIN: stats.esrch_main++; break;
-            case PROLAPSE_OUTCOME_ESRCH_RACER: stats.esrch_racer++; break;
-            case PROLAPSE_OUTCOME_BOTH_ESRCH: stats.both_esrch++; break;
-            case PROLAPSE_OUTCOME_TIMEOUT: stats.timeouts++; break;
-            default: stats.other++; break;
-            }
-        }
-
-        if (any_win) {
-            fprintf(out,
-                    "{\"record\":\"frozen_round\",\"run_id\":%llu,"
-                    "\"round_id\":%llu,\"strategy\":\"%s\",\"batch_size\":%u,"
-                    "\"wins\":%u}\n",
-                    (unsigned long long)run_id, (unsigned long long)round_id,
-                    strategy, batch, wins_this_round);
-            fflush(out);
-        }
-
-        printf("[P1] round=%u strategy=%s attempts=%llu wins=%llu "
-               "parked_live=%d window_us=%llu outcomes(wins=%u)\n",
-               round + 1, strategy, (unsigned long long)stats.attempts,
-               (unsigned long long)stats.wins, pool->parked_live,
-               (unsigned long long)window_us, wins_this_round);
-
-        if (main_done == 1 && pool_wait_idle(pool, im, 1000000) != 1) {
-            snprintf(why, why_len, "main worker did not become idle");
-            round_close_peers(&r);
-            goto fail;
-        }
-        if (racer_done == 1 && pool_wait_idle(pool, ir, 1000000) != 1) {
-            snprintf(why, why_len, "racer worker did not become idle");
-            round_close_peers(&r);
-            goto fail;
-        }
-        if (main_done == 0) {
-            if (pool_release_parked(pool, im, jm, linger_park_timeout,
-                                    why, why_len) != 0) {
-                for (slot = 0; slot < batch; slot++)
-                    r.peers[slot] = jm->peers[slot];
-                round_close_peers(&r);
-                goto fail;
-            }
-            /* Releasing the first parked job closes the shared peer fds. */
-            for (slot = 0; slot < batch; slot++) {
-                r.peers[slot] = -1;
-                jr->peers[slot] = -1;
-            }
-        }
-        if (racer_done == 0) {
-            if (pool_release_parked(pool, ir, jr, linger_park_timeout,
-                                    why, why_len) != 0) {
-                for (slot = 0; slot < batch; slot++)
-                    r.peers[slot] = jr->peers[slot];
-                round_close_peers(&r);
-                goto fail;
-            }
-            for (slot = 0; slot < batch; slot++)
-                r.peers[slot] = -1;
-        }
-        if (main_done == 1 && racer_done == 1)
-            round_close_peers(&r);
-        else
-            for (slot = 0; slot < batch; slot++)
-                r.peers[slot] = -1;
-
-        {
-            int stop_on_win = 1;
-            (void)prolapse_config_get_int(cfg, "race.stop_on_first_win",
-                                          &stop_on_win);
-            if (any_win && stop_on_win) {
-                printf("[P1] FROZEN first win strategy=%s round=%u "
-                       "round_id=%llu\n", strategy, round + 1,
-                       (unsigned long long)round_id);
-                *stop_all = 1;
-                break;
-            }
-        }
-
-        if (stats.wins == 0 && stats.attempts >= loss_threshold &&
-            !dead_end_written) {
-            uint64_t p99 = 0;
-            stats_finish(&stats);
-            p99 = stats.p99;
-            if (prolapse_append_dead_end(cfg->dead_ends_path, strategy,
-                                         stats.attempts, stats.wins, p99,
-                                         stats.cap_hits,
-                                         "loss_threshold reached in-run") != 0) {
-                snprintf(why, why_len, "dead-end append failed");
-                goto fail;
-            }
-            dead_end_written = 1;
-            printf("[P1] DEAD_END strategy=%s attempts=%llu wins=0 p99=%llu "
-                   "appended=%s\n", strategy,
-                   (unsigned long long)stats.attempts,
-                   (unsigned long long)p99, cfg->dead_ends_path);
-            break;
-        }
-        continue;
-
-cap_fail:
-        stats.cap_hits++;
-        stats_finish(&stats);
-        if (!dead_end_written) {
-            (void)prolapse_append_dead_end(cfg->dead_ends_path, strategy,
-                                           stats.attempts, stats.wins,
-                                           stats.p99, stats.cap_hits,
-                                           "thread cap tripped; run aborted");
-            dead_end_written = 1;
-        }
-        goto fail;
-    }
-
-    stats_finish(&stats);
-    if (stats.wins == 0 && !dead_end_written) {
-        if (prolapse_append_dead_end(cfg->dead_ends_path, strategy,
-                                     stats.attempts, stats.wins, stats.p99,
-                                     stats.cap_hits,
-                                     "round budget completed with zero wins")
-            != 0) {
-            snprintf(why, why_len, "dead-end append failed");
-            free(stats.windows);
-            return -1;
-        }
-        dead_end_written = 1;
-        printf("[P1] DEAD_END strategy=%s attempts=%llu wins=0 p99=%llu "
-               "appended=%s\n", strategy,
-               (unsigned long long)stats.attempts,
-               (unsigned long long)stats.p99, cfg->dead_ends_path);
-    }
-    printf("[P1] summary strategy=%s attempts=%llu wins=%llu esrch_main=%llu "
-           "esrch_racer=%llu both_esrch=%llu timeout=%llu other=%llu "
-           "cap_hits=%llu p50=%llu p90=%llu p99=%llu dropped_windows=%llu\n",
-           strategy, (unsigned long long)stats.attempts,
-           (unsigned long long)stats.wins,
-           (unsigned long long)stats.esrch_main,
-           (unsigned long long)stats.esrch_racer,
-           (unsigned long long)stats.both_esrch,
-           (unsigned long long)stats.timeouts,
-           (unsigned long long)stats.other,
-           (unsigned long long)stats.cap_hits,
-           (unsigned long long)stats.p50,
-           (unsigned long long)stats.p90,
-           (unsigned long long)stats.p99,
-           (unsigned long long)stats.dropped_windows);
-    free(stats.windows);
-    return 0;
-
-fail:
-    free(stats.windows);
-    return -1;
-}
-
 int prolapse_p1_run(prolapse_config_t *cfg)
 {
     p1_pool_t pool;
     FILE *out = stdout;
-    const char *strategy = prolapse_config_get(cfg, "race.strategy");
-    const char *strategies[3];
-    int nstrategies = 0, si;
     uint64_t run_id;
     uint64_t seed = 0;
     uint32_t max_threads = PROLAPSE_DEFAULT_MAX_THREADS;
@@ -1063,7 +704,6 @@ int prolapse_p1_run(prolapse_config_t *cfg)
     uint64_t fanout = 1024, needed;
     uint32_t batch = 4;
     int cpu_a = 0, cpu_b = 1;
-    int stop_all = 0;
     char why[512] = {0};
     int rc = 0;
 
@@ -1073,7 +713,6 @@ int prolapse_p1_run(prolapse_config_t *cfg)
                                   &park_timeout);
     (void)prolapse_config_get_u64(cfg, "spray.fanout", &fanout);
     (void)prolapse_config_get_u32(cfg, "race.batch", &batch);
-    g_round_counter = 0;
     g_attempt_seq = 0;
     g_call_seq = 0;
     memset(g_aio_buf, 0, sizeof(g_aio_buf));
@@ -1120,7 +759,8 @@ int prolapse_p1_run(prolapse_config_t *cfg)
         goto out_close;
     }
 
-    if (serialized_control(&pool, cfg, cpu_a, out, why, sizeof(why)) != 0) {
+    if (serialized_control(&pool, cfg, cpu_a, out, run_id, why,
+                           sizeof(why)) != 0) {
         fprintf(stderr, "prolapse p1: SERIALIZED CONTROL FAILED: %s\n", why);
         rc = 2;
         goto drain;
@@ -1129,26 +769,6 @@ int prolapse_p1_run(prolapse_config_t *cfg)
         fprintf(stderr, "prolapse p1: GENERATION CONTROL FAILED: %s\n", why);
         rc = 2;
         goto drain;
-    }
-
-    if (!strategy)
-        strategy = "all";
-    if (strcmp(strategy, "all") == 0) {
-        strategies[nstrategies++] = "same_barrier";
-        strategies[nstrategies++] = "split_barrier";
-        strategies[nstrategies++] = "split_stagger";
-    } else {
-        strategies[nstrategies++] = strategy;
-    }
-
-    for (si = 0; si < nstrategies && !stop_all; si++) {
-        if (run_strategy(&pool, cfg, strategies[si], out, run_id, cpu_a, cpu_b,
-                         &stop_all, why, sizeof(why)) != 0) {
-            fprintf(stderr, "prolapse p1: STRATEGY FAILED strategy=%s: %s\n",
-                    strategies[si], why);
-            rc = 2;
-            goto drain;
-        }
     }
 
 drain:
