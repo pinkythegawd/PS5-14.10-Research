@@ -638,6 +638,7 @@ static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
                        size_t why_len)
 {
     p1_job_t *jobs[P1_MAX_WORKERS + 2];
+    int indexes[P1_MAX_WORKERS + 2];
     int n_assign = pool->max_threads + 2;
     uint64_t hits_before = pool->cap_hits;
     uint64_t cap_delta;
@@ -655,6 +656,7 @@ static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
                 goto release;
             }
             jobs[i] = job;
+            indexes[i] = index;
         } else if (index >= 0) {
             snprintf(why, why_len,
                      "cap control: assignment %d/%d succeeded; the cap did "
@@ -671,12 +673,26 @@ static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
     }
     for (i = 0; i < pool->max_threads; i++)
         __atomic_store_n(&jobs[i]->go, 1, __ATOMIC_RELEASE);
+    /* Fully drain before returning: every assigned worker must have
+     * finished its no-op job and cleared active.  Nothing may be left
+     * parked — the no-op jobs never enter a delete. */
     for (i = 0; i < pool->max_threads; i++) {
         if (pool_wait_done(jobs[i], 1000000) != 1) {
             snprintf(why, why_len,
                      "cap control: no-op worker %d did not finish", i);
             return -1;
         }
+        if (pool_wait_idle(pool, indexes[i], 1000000) != 1) {
+            snprintf(why, why_len,
+                     "cap control: no-op worker %d did not drain", i);
+            return -1;
+        }
+    }
+    if (pool->parked_live != 0) {
+        snprintf(why, why_len,
+                 "cap control: parked_live=%d after drain, expected 0",
+                 pool->parked_live);
+        return -1;
     }
     if (prolapse_write_control(out, "cap", (uint64_t)n_assign, cap_delta, 2,
                                1,
@@ -686,8 +702,8 @@ static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
         return -1;
     }
     printf("[control] cap PASS max_threads=%d assignments=%d "
-           "cap_hits_delta=%llu\n", pool->max_threads, n_assign,
-           (unsigned long long)cap_delta);
+           "cap_hits_delta=%llu drained=%d\n", pool->max_threads, n_assign,
+           (unsigned long long)cap_delta, pool->max_threads);
     return 0;
 
 release:
@@ -840,15 +856,6 @@ int prolapse_p1_run(prolapse_config_t *cfg)
             goto out_close;
         }
     }
-    if (want_control(cfg->control, "cap")) {
-        if (cap_control(&pool, cpu_a, out, why, sizeof(why)) != 0) {
-            fprintf(stderr,
-                    "prolapse p1: verdict=cap_control_failed rc=2: %s\n",
-                    why);
-            rc = 2;
-            goto drain;
-        }
-    }
     if (want_control(cfg->control, "serialized")) {
         if (serialized_control(&pool, cfg, cpu_a, out, run_id, why,
                                sizeof(why)) != 0) {
@@ -866,6 +873,15 @@ int prolapse_p1_run(prolapse_config_t *cfg)
                     "prolapse p1: verdict=generation_control_failed rc=4: "
                     "%s\n", why);
             rc = 4;
+            goto drain;
+        }
+    }
+    if (want_control(cfg->control, "cap")) {
+        if (cap_control(&pool, cpu_a, out, why, sizeof(why)) != 0) {
+            fprintf(stderr,
+                    "prolapse p1: verdict=cap_control_failed rc=2: %s\n",
+                    why);
+            rc = 2;
             goto drain;
         }
     }

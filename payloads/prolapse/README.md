@@ -53,10 +53,10 @@ so JSON escaping is proven.
   --seed 1
 ```
 
-The run is preflights, then the cap control, then the serialized control, then
-the generation control, then teardown. No strategy runs. `race.control_rounds`
-defaults to 500; override with `--set race.control_rounds=1000` or
-`--control-rounds 1000`.
+The run is preflights, then the serialized control, then the generation
+control, then the cap control, then teardown. No strategy runs.
+`race.control_rounds` defaults to 500; override with `--set
+race.control_rounds=1000` or `--control-rounds 1000`.
 
 Serialized control per round: submit `AIO_CMD_READ|AIO_CMD_MULTI` over a TCP
 loopback pair with `SO_LINGER {1,1}` on the target; `aio_cancel`; `aio_poll`
@@ -95,42 +95,43 @@ Exit codes distinguish the failure kinds with a one-line verdict:
 ### Controls (run before any race)
 
 `--control all|serialized|generation|cap` selects which controls run (default
-`all`). A failed control aborts with its own one-line verdict
-(`verdict=cap_control_failed` rc=2 / `verdict=serialized_control_failed` rc=2 /
-`verdict=generation_control_failed` rc=4), distinct from the preflight
-verdicts.
+`all` = serialized, then generation, then cap). A failed control aborts with
+its own one-line verdict (`verdict=serialized_control_failed` rc=2 /
+`verdict=generation_control_failed` rc=4 / `verdict=cap_control_failed` rc=2),
+distinct from the preflight verdicts.
 
-- Cap: assign `max_threads + 2` no-op jobs from the worker pool. The first
-  `max_threads` must succeed and the last two must trip the cap
-  (`pool_assign` returns `-1`, `cap_hits` advances by >=2). No AIO syscall is
-  issued by the no-op jobs. Runs as part of `all` after preflight 4, and as a
-  standalone host-verifiable mode: `--control cap` skips preflight 4 (it does
-  not need linger) so the cap trip is checked on the host build too.
 - Serialized: one caller, two sequential deletes, same id. Expect `~0`
   `both_zero`; any `both_zero` aborts the run — P1 would then be counting
-  something other than the race. The stop is unconditional: there is no
-  `--stop-on-both-zero` flag and no way to disable it. Every attempt emits one
-  JSONL attempt line (`strategy:"serialized_control"`, `control:true`) and the
-  run ends with the outcome histogram on stdout.
+  something other than the race. The stop is unconditional and cannot be
+  disabled. Every attempt emits one JSONL attempt line
+  (`strategy:"serialized_control"`, `control:true`) and the run ends with the
+  outcome histogram on stdout.
 - Generation: bump the generation bits of the id before the second delete and
   delete the bumped id; the loser must return `0x80020003`. If that error does
   not reproduce, the run aborts with `verdict=generation_control_failed` rc=4 —
   the generation check is the one 14.10 ground truth the whole race depends on.
+- Cap: assign `max_threads + 2` no-op jobs from the worker pool. The first
+  `max_threads` must succeed and the last two must trip the cap
+  (`pool_assign` returns `-1`, `cap_hits` advances by >=2). No AIO syscall is
+  issued by the no-op jobs. It fully drains before returning: every assigned
+  worker must finish and clear `active`, and `parked_live` must be 0. As a
+  standalone mode `--control cap` skips preflight 4 (it does not need linger)
+  so the cap trip is host-verifiable too.
 
 All controls also emit one `record:"control"` summary line and must pass.
 
 ### Defaults (exact, as committed)
 
-- `--control`: default `all` = cap, serialized, generation, in that order.
+- `--control`: default `all` = serialized, generation, cap, in that order.
 - `--rounds`: maps to `race.rounds`, default 50000 — the strategy budget. It is
-  dormant in this slice (no strategies run) and does not affect control
+  inert in this slice (no strategies run) and does not affect control
   attempts.
 - Control attempts: `--control-rounds` / `race.control_rounds`, default 500,
   range 8-100000. The serialized and generation controls each run this many
   attempts.
-- `--stop-on-both-zero`: does not exist (see above; the abort is unconditional).
-  `--stop-on-first-win` / `--no-stop-on-first-win` is the strategy-stage
-  first-win stop (default on) and is unrelated to `both_zero`.
+- `--stop-on-first-win` / `--no-stop-on-first-win` is the strategy-stage
+  first-win stop (default on) and is unrelated to `both_zero`. Unknown flags
+  are rejected at parse time with a hard failure.
 
 ### Parked-thread cap
 
@@ -229,21 +230,25 @@ Host checks are green, including the synthetic harness (all six outcomes,
 `both_zero` abort, histogram, escaping), the exit-code split (host preflight
 4 prints `verdict=preflight_unavailable_in_build` and exits 3), and the cap
 control (`--control cap` passes on the host build: assignments 1..N succeed,
-the last two trip the cap). Console acceptance for the P1 slice requires the
-SDK, a 14.00 V59 console, and capture of the four preflights, the cap control,
-the serialized control at >=500 attempts with its histogram and zero
-`both_zero`, and the generation control. The exact handover command is:
+the last two trip the cap, all workers drained). Console acceptance for the
+P1 slice requires the SDK, a 14.00 V59 console, and capture of the four
+preflights, the serialized control at >=500 attempts with its histogram and
+zero `both_zero`, the generation control, and the cap control. The exact
+handover command is:
 
 ```sh
 ./prolapse_p1p2.elf --stage p1 \
+  --control-rounds 500 \
   --max-threads 64 \
   --jsonl /data/prolapse/p1.jsonl \
   --seed 1
 ```
 
-With the committed defaults (`--control all`, `race.control_rounds` 500,
-`both_zero` stop unconditional) this runs: preflights 1-4, cap control,
-serialized control (500 attempts), generation control (500 attempts),
-teardown. It does not run strategies. Strategy acceptance (1000 attempts per
-strategy, one in-run dead-end append, three frozen `both_zero` events through
-P2) is deferred with the strategies. Those numbers are not fabricated here.
+With the committed defaults (`--control all` = serialized → generation → cap,
+`race.control_rounds` 500, `both_zero` stop unconditional) this runs:
+preflights 1-4, serialized control (500 attempts), generation control (500
+attempts), cap control, teardown. It does not run strategies — `--rounds`
+(`race.rounds`, the strategy budget) is inert in this slice. Strategy
+acceptance (1000 attempts per strategy, one in-run dead-end append, three
+frozen `both_zero` events through P2) is deferred with the strategies. Those
+numbers are not fabricated here.
