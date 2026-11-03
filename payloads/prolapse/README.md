@@ -1,0 +1,143 @@
+# Prolapse P1/P2 (14.00 V59 dev path)
+
+Standalone payload for the instrumented duplicate-delete race (P1) and the
+frozen-candidate winner log (P2). It is **not** an exploit. It does not perform
+KRW, does not use `lane_VA`, and does not touch WebKit.
+
+## Scope and P3 status
+
+- Active profile: `target.profile=14.00_v59`.
+- P1 and P2 are implemented in this tree.
+- **P3 is not implemented and is blocked.** P3 needs the req2 zone from IDA on
+  `kernel_1400.elf` or the A1 optlen sweep. The current `0x58` size class is
+  unproven; see `docs/PROLAPSE_OFFSETS.md` A1. No P1/P2 code inlines a zone or
+  optlen. A flat P3 sweep means the `0x58` size assumption is wrong, not just
+  the bucket.
+- 14.10 offsets are not ported here. The ledger's 14.00 column says
+  `verify on target` for the AIO syscall numbers; the payload uses the 14.10
+  number only as an explicitly-labelled fallback and prints it at startup.
+  Supply `--set sys.aio_multi_delete=...` etc. to override.
+
+## Build
+
+PS5 payload SDK:
+
+```sh
+export PS5_PAYLOAD_SDK=/opt/ps5-payload-dev/sdk
+make                  # builds prolapse_p1p2.elf
+```
+
+Host checks (no SDK, no console):
+
+```sh
+make check            # generated ledger header + C core tests + P2 fixture
+```
+
+`make check` verifies the ledger header is not stale, the classifier and JSONL
+writer, the config/`--set` contract, and the P2 parser on a frozen fixture.
+
+## P1
+
+```sh
+./prolapse_p1p2.elf --stage p1 \
+  --strategy all \
+  --rounds 250 \
+  --stop-on-first-win \
+  --max-threads 64 \
+  --jsonl /data/prolapse/p1.jsonl \
+  --dead-ends /data/prolapse/DEAD_ENDS.md \
+  --seed 1
+```
+
+`--rounds` is rounds per strategy; attempts are `rounds * race.batch`. With the
+default batch of 4, `--rounds 250` is 1000 attempts per strategy. Strategies are
+run cheapest-first when `--strategy all`:
+
+1. `same_barrier` — both callers on one allowed CPU.
+2. `split_barrier` — two distinct allowed CPUs, same gate.
+3. `split_stagger` — two CPUs, `race.stagger_us` between the two gates.
+
+Per round: submit `AIO_CMD_READ|AIO_CMD_MULTI` over a TCP loopback pair with
+`SO_LINGER {1,1}` on the target; `aio_cancel`; `aio_poll` until state 3 or 4;
+arm two workers; two `aio_multi_delete` calls on the same id; classify; reap.
+The target user fd is closed after submit; the peer is the live handle used to
+release a parked worker with `SO_LINGER {0,0}`.
+
+### Preflights (must print all four)
+
+1. `clock_gettime(232)` returns 0 and advances in `tv_nsec`.
+2. `cpuset_getaffinity(3,1,-1,...)` returns at least two allowed CPUs; the
+   lowest two are selected.
+3. `RLIMIT_NOFILE` is raised to cover `spray.fanout` at the configured batch and
+   thread counts plus headroom.
+4. `SO_LINGER {1,1}` parks one worker past 5 ms, then `{0,0}` releases it and it
+   returns.
+
+Any failure aborts before racing. A failed parking preflight is a stop
+condition: later numbers would be meaningless.
+
+### Controls (run before any race)
+
+- Serialized: one caller, two sequential deletes, same id. Expect `~0`
+  `both_zero`.
+- Generation: bump generation bits and delete the bumped id. Expect
+  `0x80020003` on the loser.
+
+Both controls are written to the JSONL as `record:"control"` and must pass.
+
+### Parked-thread cap
+
+`--max-threads` defaults to 64 and is a hard cap on active plus parked workers.
+Exceeding it is a loud failure, not degradation. The round line prints
+`parked_live`; teardown drains to zero before exit and prints
+`parked_live=0 drain=ok`. `--max-threads 2` is the acceptance cap test.
+
+### P1 JSONL
+
+One `record:"attempt"` line per id per round. Required fields:
+
+`seq, strategy, id, t_start_us, t_end_us, window_us, parked_live, main_ret,
+main_err, racer_ret, racer_err, outcome`
+
+`outcome` is one of `both_zero`, `esrch_main`, `esrch_racer`, `both_esrch`,
+`timeout`, `other`. Time is `clock_gettime(232)`. Raw 624 is present in
+`sys624_*` fields and labelled `vm_operation_counter_ordering_token`; it is not
+used as a timer. Extra fields include `round_id`, `slot`, `batch_size`,
+`main_seq`, `racer_seq`, `frozen`, and `candidate`.
+
+When a round contains a `both_zero`, every line in that round is marked
+`frozen:true` and a `frozen_round` marker is emitted. P2 consumes those lines.
+
+### Dead ends
+
+When a strategy reaches `race.loss_threshold` (default 1000) with zero wins, or
+a run trips the thread cap, P1 appends strategy, attempts, wins, p99 window, and
+cap hits to `--dead-ends` (default `docs/DEAD_ENDS.md`) during the run. A failed
+append is a hard failure.
+
+## P2
+
+P2 never races and never calls AIO. It reads only frozen candidates:
+
+```sh
+./prolapse_p1p2.elf --stage p2 \
+  --input /data/prolapse/p1.jsonl \
+  --out /data/prolapse/p2.jsonl
+```
+
+Every id in a frozen round is logged with `id`, `ret`, `err`, `seq`, `slot`,
+and both callers' errors/sequences. `both_zero` is narrow: exactly two
+`err == 0` on one slot. The second zero (higher `main_seq`/`racer_seq`) is
+emitted as `winner_id` with its slot. A non-zero, non-ESRCH error on the same
+slot sets `false_winner_suspect:true` and records `suspect_err`; P3 will need
+these marked.
+
+`--jsonl` is also accepted as the P2 output path when `--out` is absent.
+
+## Acceptance status
+
+Host checks are green. Console acceptance still requires the SDK, a 14.00 V59
+console, and capture of the four preflights, both controls, at least 1000
+attempts per strategy, the `--max-threads 2` cap trip, one in-run dead-end
+append, and at least three frozen `both_zero` events through P2. Those numbers
+are not fabricated here.
