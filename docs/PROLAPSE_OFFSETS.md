@@ -20,14 +20,16 @@ Cross-run comparison (windows, park times, codegen-sensitive race behavior) is
 only valid within one toolchain. Any change to any row below invalidates every
 P1/P2/P3 timing comparison made before it; update this block and re-baseline
 before the next run. A toolchain change is a ledger change, not a silent
-rebuild.
+rebuild. **An SDK version change invalidates cross-run comparison exactly like
+a compiler change** — the SDK supplies the compiler wrapper, crt objects, libc
+and stubs that every console ELF links against.
 
 | Component | Pinned value |
 |---|---|
 | WSL distro | Kali GNU/Linux Rolling (Debian base) |
 | WSL host kernel | 6.18.33.2-microsoft-standard-WSL2 |
-| `clang --version` (host) | not installed in the WSL distro; console ELF builds use the PS5_PAYLOAD_SDK clang |
-| PS5_PAYLOAD_SDK | absent from this WSL distro on 2026-11-03 (was in the former Debian distro); reinstall before `make` ELF builds |
+| `clang --version` (console ELF) | clang 18.1.8, prebuilt `clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04` release tarball (llvm-project `llvmorg-18.1.8`), user-local at `~/ps5-payload-dev/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04`; `ld.lld` 18.1.8 |
+| PS5_PAYLOAD_SDK | v0.45 (tag date 2026-10-20), source https://github.com/ps5-payload-dev/sdk, installed 2026-11-03 to `~/ps5-payload-dev/prefix` (`make install`, user-local, no sudo); libtinfo5 (Debian bullseye deb) extracted user-locally for the wrapper |
 | `gcc --version` (make check) | gcc (Debian 16.2.0-1) 16.2.0 |
 | `python3 --version` (generator/checks) | Python 3.14.7 |
 
