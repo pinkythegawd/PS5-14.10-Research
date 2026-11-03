@@ -1,0 +1,3 @@
+# Vendored references must stay byte-identical (SHA record). Never apply
+# EOL conversion, diff heuristics, or formatters to them.
+exploit/prolapse/reference/* -text
