@@ -152,10 +152,18 @@ static int validate(prolapse_config_t *cfg)
 {
     const char *strategy = prolapse_config_get(cfg, "race.strategy");
     const char *profile = prolapse_config_get(cfg, "target.profile");
+    const char *control = cfg->control ? cfg->control : "all";
     uint64_t stop;
 
     if (cfg->stage && strcmp(cfg->stage, "synthetic") == 0)
         return 0;
+    if (strcmp(control, "all") != 0 &&
+        strcmp(control, "serialized") != 0 &&
+        strcmp(control, "generation") != 0) {
+        fprintf(stderr, "prolapse: bad --control '%s' "
+                "(want all|serialized|generation)\n", control);
+        return -1;
+    }
     if (!profile || strcmp(profile, "14.00_v59") != 0) {
         fprintf(stderr,
                 "prolapse: this round only supports target.profile=14.00_v59 "
@@ -181,6 +189,7 @@ static int validate(prolapse_config_t *cfg)
         check_range(cfg, "linger.onoff", 0, 1) ||
         check_range(cfg, "linger.seconds", 0, 60) ||
         check_range(cfg, "race.terminal_timeout_us", 1000, 10000000) ||
+        check_range(cfg, "race.timeout_window_us", 1000, 60000000) ||
         check_range(cfg, "linger.park_timeout_us", 1000, 60000000) ||
         get_u64_raw(cfg, "race.stop_on_first_win", &stop, NULL) != 0 ||
         stop > 1) {
@@ -232,6 +241,7 @@ static void usage(const char *argv0)
         "  P1: --strategy all|split_barrier|same_barrier|split_stagger\n"
         "      --rounds N --stop-on-first-win|--no-stop-on-first-win\n"
         "      --max-threads N --set key=value --jsonl PATH --seed N\n"
+        "      --control all|serialized|generation\n"
         "      [--dead-ends PATH] [--loss-threshold N] [--control-rounds N]\n"
         "  P2: --stage p2 --input PATH [--jsonl PATH]\n"
         "  synthetic (host only): --synthetic FILE [--synthetic-no-abort]\n"
@@ -302,6 +312,8 @@ int prolapse_config_load(prolapse_config_t *cfg, int argc, char **argv)
             cfg->input_path = argv[++j];
         } else if (strcmp(a, "--out") == 0 && j + 1 < argc) {
             cfg->out_path = argv[++j];
+        } else if (strcmp(a, "--control") == 0 && j + 1 < argc) {
+            cfg->control = argv[++j];
         } else if (strcmp(a, "--dead-ends") == 0 && j + 1 < argc) {
             cfg->dead_ends_path = argv[++j];
         } else if (strcmp(a, "--set") == 0 && j + 1 < argc) {

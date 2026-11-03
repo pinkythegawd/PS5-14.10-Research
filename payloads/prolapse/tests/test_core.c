@@ -21,6 +21,15 @@ static void test_classify(void)
     assert(prolapse_classify(0, 0, 3, (int)0x80020003u) ==
            PROLAPSE_OUTCOME_BOTH_ESRCH);
     assert(prolapse_classify(0, 0, 22, 0) == PROLAPSE_OUTCOME_OTHER);
+
+    assert(prolapse_classify_windowed(0, 0, 0, 0, 5000, 5000) ==
+           PROLAPSE_OUTCOME_TIMEOUT);
+    assert(prolapse_classify_windowed(0, 0, 0, 0, 4999, 5000) ==
+           PROLAPSE_OUTCOME_BOTH_ZERO);
+    assert(prolapse_classify_windowed(-1, 0, 0, 0, 5000, 5000) ==
+           PROLAPSE_OUTCOME_BOTH_ZERO);
+    assert(prolapse_classify_windowed(0, 0, 0, 3, 6000, 5000) ==
+           PROLAPSE_OUTCOME_ESRCH_RACER);
 }
 
 static void test_jsonl(void)

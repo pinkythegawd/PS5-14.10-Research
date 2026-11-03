@@ -737,10 +737,10 @@ int prolapse_p1_run(prolapse_config_t *cfg)
     if (run_id == 0)
         run_id = 1;
     run_id ^= (seed * 0x9E3779B97F4A7C15ull);
-    printf("prolapse p1: run_id=%llu jsonl=%s seed=%llu\n",
+    printf("prolapse p1: run_id=%llu jsonl=%s seed=%llu control=%s\n",
            (unsigned long long)run_id,
            cfg->jsonl_path ? cfg->jsonl_path : "stdout",
-           (unsigned long long)seed);
+           (unsigned long long)seed, cfg->control ? cfg->control : "all");
 
     if (prolapse_preflight_clock(why, sizeof(why)) != 0)
         goto preflight_fail;
@@ -767,16 +767,25 @@ int prolapse_p1_run(prolapse_config_t *cfg)
         goto out_close;
     }
 
-    if (serialized_control(&pool, cfg, cpu_a, out, run_id, why,
-                           sizeof(why)) != 0) {
-        fprintf(stderr, "prolapse p1: SERIALIZED CONTROL FAILED: %s\n", why);
-        rc = 2;
-        goto drain;
+    if (!cfg->control || strcmp(cfg->control, "generation") != 0) {
+        if (serialized_control(&pool, cfg, cpu_a, out, run_id, why,
+                               sizeof(why)) != 0) {
+            fprintf(stderr,
+                    "prolapse p1: verdict=serialized_control_failed rc=2: "
+                    "%s\n", why);
+            rc = 2;
+            goto drain;
+        }
     }
-    if (generation_control(&pool, cfg, cpu_a, out, why, sizeof(why)) != 0) {
-        fprintf(stderr, "prolapse p1: GENERATION CONTROL FAILED: %s\n", why);
-        rc = 2;
-        goto drain;
+    if (!cfg->control || strcmp(cfg->control, "serialized") != 0) {
+        if (generation_control(&pool, cfg, cpu_a, out, why,
+                               sizeof(why)) != 0) {
+            fprintf(stderr,
+                    "prolapse p1: verdict=generation_control_failed rc=2: "
+                    "%s\n", why);
+            rc = 2;
+            goto drain;
+        }
     }
 
 drain:

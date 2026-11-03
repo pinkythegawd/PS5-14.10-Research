@@ -87,13 +87,20 @@ Exit codes distinguish the two failure kinds with a one-line verdict:
 
 ### Controls (run before any race)
 
+`--control all|serialized|generation` selects which controls run (default
+`all`). A failed control aborts with its own one-line verdict
+(`verdict=serialized_control_failed` / `verdict=generation_control_failed`),
+distinct from the preflight verdicts.
+
 - Serialized: one caller, two sequential deletes, same id. Expect `~0`
   `both_zero`; any `both_zero` aborts the run — P1 would then be counting
   something other than the race. Every attempt emits one JSONL attempt line
   (`strategy:"serialized_control"`, `control:true`) and the run ends with the
   outcome histogram on stdout.
-- Generation: bump generation bits and delete the bumped id. Expect
-  `0x80020003` on the loser.
+- Generation: bump the generation bits of the id before the second delete and
+  delete the bumped id; the loser must return `0x80020003`. If that error does
+  not reproduce, the run aborts with `verdict=generation_control_failed` — the
+  generation check is the one 14.10 ground truth the whole race depends on.
 
 Both controls also emit one `record:"control"` summary line and must pass.
 
@@ -164,20 +171,28 @@ histogram and `both_zero` abort are exercised without a console:
   --synthetic-no-abort --jsonl /tmp/synthetic.jsonl
 ```
 
-CSV columns: `seq,main_ret,main_err,racer_ret,racer_err[,outcome][,note]`.
-The optional `outcome` column overrides the classifier (used for `timeout`
-rows, which classification alone cannot produce); the `note` column is free
+CSV columns: `seq,main_ret,main_err,racer_ret,racer_err[,window_us][,outcome][,note]`.
+`window_us` feeds the windowed classifier: a row with both rets 0, both errs 0
+and `window_us >= race.timeout_window_us` (default 5000) derives `timeout`
+with no override. The optional `outcome` column still overrides the classifier
+outright (for rows the derivation cannot express); the `note` column is free
 text — everything after its comma is kept verbatim, commas included, and goes
 through the JSON escaper. Blank lines, `#` comments, and a `seq,...` header
 line are skipped. Every row is emitted with `synthetic:true`,
-`strategy:"synthetic"`, and zeroed timers, plus a closing `control` summary.
+`strategy:"synthetic"`, and the CSV window in `window_us` (zeroed timers
+otherwise), plus a closing `control` summary.
+
+The windowed derivation is synthetic-only: the console P1 path keeps
+caller-set timeouts (timed flags), because reclassifying a slow `both_zero` as
+`timeout` would mask the serialized control's stop condition.
 
 Any `both_zero` row aborts the run with exit 1 and
 `synthetic: BOTH_ZERO ABORT` on stderr, mirroring the P1 control stop rule;
 `--synthetic-no-abort` disables the abort so a fixture containing `both_zero`
 rows can be classified end to end. `make check` runs both modes against
 `tests/fixtures/synthetic_40.csv` (42 rows: 3 `both_zero`, 2 `both_esrch`, all
-six outcomes, and a note containing a quote and a backslash).
+six outcomes — one `timeout` derived via `window_us`, one via override — and a
+note containing a quote and a backslash).
 
 ## Acceptance status
 

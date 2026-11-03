@@ -23,6 +23,7 @@ static const prolapse_ledger_entry_t g_prolapse_ledger[] = {
     {"race.spin_limit", "800000000", "800000000", "P1"},
     {"race.transport", "tcp_loopback", "tcp_loopback", "P1"},
     {"race.terminal_timeout_us", "1000000", "1000000", "P1"},
+    {"race.timeout_window_us", "5000", "5000", "P1"},
     {"linger.onoff", "1", "1", "P1"},
     {"linger.seconds", "1", "1", "P1"},
     {"linger.park_timeout_us", "2000000", "2000000", "P1"},

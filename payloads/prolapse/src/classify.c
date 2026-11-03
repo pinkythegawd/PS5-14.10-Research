@@ -37,6 +37,25 @@ prolapse_outcome_t prolapse_classify(int main_ret, int racer_ret,
     return PROLAPSE_OUTCOME_OTHER;
 }
 
+/*
+ * Windowed derivation: both deletes returned success with no errors but the
+ * measured window is at or past the threshold, so the round is a timeout, not
+ * a both_zero.  Used by the synthetic harness, which has no timed flags.
+ * The console P1 path keeps caller-set timeouts: reclassifying a slow
+ * both_zero as timeout would mask the control's stop condition.
+ */
+prolapse_outcome_t prolapse_classify_windowed(int main_ret, int racer_ret,
+                                              int main_err, int racer_err,
+                                              uint64_t window_us,
+                                              uint64_t threshold_us)
+{
+    if (window_us >= threshold_us &&
+        main_ret == 0 && racer_ret == 0 &&
+        main_err == 0 && racer_err == 0)
+        return PROLAPSE_OUTCOME_TIMEOUT;
+    return prolapse_classify(main_ret, racer_ret, main_err, racer_err);
+}
+
 const char *prolapse_outcome_name(prolapse_outcome_t outcome)
 {
     switch (outcome) {

@@ -33,6 +33,37 @@ and stubs that every console ELF links against.
 | `gcc --version` (make check) | gcc (Debian 16.2.0-1) 16.2.0 |
 | `python3 --version` (generator/checks) | Python 3.14.7 |
 
+### `-lps5` removal accounting (2026-11-03)
+
+The P1-slice Makefile (4663656) linked `-lps5 -lkernel_sys -pthread`; the
+`-lps5` flag was removed in 9f067d9. The symbol accounting:
+
+- **libps5.a never existed in this SDK lineage.** No artifact of
+  ps5-payload-dev/sdk contains it: not in git history (v0.31–v0.45; no path
+  ever matched `*libps5*` or `*PS5*`, no `.a` file ever tracked), not in the
+  oldest release zip (v0.23), not in v0.31, not in v0.45. The other lineage
+  (PS5Dev/PS5SDK) produces no libps5.a either (dlsym-based CRT). The flag was
+  inert cargo from `tools/v1360-dumper/Makefile`.
+- **The pre-change link line could never produce an ELF in this toolchain.**
+  Re-running it against v0.45 (2026-11-03) fails at link:
+  `ld.lld: error: unable to find library -lps5`. There is therefore no
+  pre-change ELF to diff, and **the set of symbols that ever came from
+  libps5 is empty by construction** — nothing moved, nothing re-resolved,
+  no stub-ABI question arises.
+- **Post-change ELF undefined symbols: 52, all accounted.** `nm -u` on the
+  rebuilt `prolapse_p1p2.elf` resolves every undefined symbol to exactly two
+  runtime providers: the `libkernel_sys.sprx` trampoline (`0x14054` — socket
+  family, pthread family, `close`, `sched_yield`, `__error`) and the
+  `libSceLibcInternal.sprx` trampoline (`0x3269c` — stdio, malloc/string
+  family, `__stdinp`/`__stdoutp`/`__stderrp`, `__isthreaded`). `NEEDED` is
+  `libkernel_sys.sprx`, `libSceLibcInternal.sprx`, `libSceNet.sprx`.
+  `libpthread.a` in v0.45 is an empty archive (8 bytes); `-pthread`
+  contributes no archive symbols.
+- The rebuilt ELF carries `.symtab`/`.strtab` but no `.debug_*` sections:
+  no DWARF is emitted by the pinned link line, so there is nothing to keep.
+  (The wrapper's `-fno-plt -fno-stack-protector` defaults do not strip the
+  symbol table.)
+
 ## Runtime keys
 
 | Key | Default | Range | Phase | 14.10 status | Source |
@@ -50,6 +81,7 @@ and stubs that every console ELF links against.
 | `race.spin_limit` | 800000000 | 1-4000000000 | P1 | gist | gist 543 |
 | `race.transport` | `tcp_loopback` | `tcp_loopback`, `unix_socketpair` | P1 | design | gist 290-298 uses socketpair; TCP is the linger-capable default |
 | `race.terminal_timeout_us` | 1000000 | 1000-10000000 | P1 | design | gist 527-528 |
+| `race.timeout_window_us` | 5000 | 1000-60000000 | P1 | design | windowed timeout derivation: both rets 0, no errs, window >= threshold; console P1 keeps caller-set timeouts so both_zero is never masked |
 | `linger.onoff` | 1 | 0-1 | P1 | gist | gist 297 |
 | `linger.seconds` | 1 | 0-60 | P1 | gist | gist 297 |
 | `linger.park_timeout_us` | 2000000 | 1000-60000000 | P1 | design | this document |

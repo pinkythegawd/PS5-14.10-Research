@@ -1,4 +1,4 @@
-seq,main_ret,main_err,racer_ret,racer_err,outcome,note
+seq,main_ret,main_err,racer_ret,racer_err,window_us,outcome,note
 1,0,0,0,0
 2,0,0,0,0
 3,0,0,0,0
@@ -37,7 +37,7 @@ seq,main_ret,main_err,racer_ret,racer_err,outcome,note
 36,0,22,0,5
 37,-1,5,-1,5
 38,0,14,0,0
-39,0,0,0,0,timeout
-40,-1,22,-1,14,timeout
-41,0,22,0,0,,say "hello" \ backslash
-42,0,5,0,0,,note with, comma and "quotes"
+39,0,0,0,0,6000
+40,-1,22,-1,14,,timeout
+41,0,22,0,0,,,say "hello" \ backslash
+42,0,5,0,0,,,note with, comma and "quotes"

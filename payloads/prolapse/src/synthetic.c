@@ -53,18 +53,20 @@ static int parse_outcome_token(const char *tok, prolapse_outcome_t *out)
 }
 
 /*
- * CSV row: seq,main_ret,main_err,racer_ret,racer_err[,outcome][,note]
- * The outcome column, when non-empty, overrides prolapse_classify (used for
- * timeout rows).  The note column is free text: everything after its comma is
- * kept verbatim, commas included.
+ * CSV row: seq,main_ret,main_err,racer_ret,racer_err[,window_us][,outcome]
+ *          [,note]
+ * window_us feeds the windowed classifier (a row with both rets 0, both errs
+ * 0 and window_us >= race.timeout_window_us derives `timeout`).  The outcome
+ * column, when non-empty, overrides the classifier entirely.  The note column
+ * is free text: everything after its comma is kept verbatim, commas included.
  * Returns 1 for blank/comment/header lines, 0 for a data row, -1 on error.
  */
 static int parse_row(char *line, uint64_t row_idx, uint64_t *seq, int *mr,
-                     int *me, int *rr, int *re, prolapse_outcome_t *override,
-                     int *has_override, char *note, size_t note_cap,
-                     char *why, size_t why_len)
+                     int *me, int *rr, int *re, uint64_t *window_us,
+                     prolapse_outcome_t *override, int *has_override,
+                     char *note, size_t note_cap, char *why, size_t why_len)
 {
-    char *fields[7];
+    char *fields[8];
     int nf = 0;
     char *p = line;
     size_t nl = strlen(line);
@@ -77,7 +79,7 @@ static int parse_row(char *line, uint64_t row_idx, uint64_t *seq, int *mr,
         return 1;
 
     fields[nf++] = p;
-    for (; *p && nf < 7; p++) {
+    for (; *p && nf < 8; p++) {
         if (*p == ',') {
             *p = '\0';
             fields[nf++] = p + 1;
@@ -97,18 +99,25 @@ static int parse_row(char *line, uint64_t row_idx, uint64_t *seq, int *mr,
                  (unsigned long long)row_idx);
         return -1;
     }
+    *window_us = 0;
+    if (nf >= 6 && fields[5][0] != '\0' &&
+        parse_u64_field(fields[5], window_us) != 0) {
+        snprintf(why, why_len, "row %llu: bad window_us field",
+                 (unsigned long long)row_idx);
+        return -1;
+    }
     *has_override = 0;
-    if (nf >= 6 && fields[5][0] != '\0') {
-        if (parse_outcome_token(fields[5], override) != 0) {
+    if (nf >= 7 && fields[6][0] != '\0') {
+        if (parse_outcome_token(fields[6], override) != 0) {
             snprintf(why, why_len, "row %llu: unknown outcome '%s'",
-                     (unsigned long long)row_idx, fields[5]);
+                     (unsigned long long)row_idx, fields[6]);
             return -1;
         }
         *has_override = 1;
     }
     note[0] = '\0';
-    if (nf >= 7) {
-        const char *s = fields[6];
+    if (nf >= 8) {
+        const char *s = fields[7];
         while (*s == ' ' || *s == '\t')
             s++;
         snprintf(note, note_cap, "%s", s);
@@ -126,9 +135,12 @@ int prolapse_synthetic_run(prolapse_config_t *cfg)
     uint64_t hist[PROLAPSE_OUTCOME_OTHER + 1] = {0};
     uint64_t rows = 0, both_zero = 0, row_idx = 0;
     uint64_t seed = 0, run_id;
+    uint64_t timeout_window_us = 5000;
     int rc = 0;
 
     (void)prolapse_config_get_u64(cfg, "race.seed", &seed);
+    (void)prolapse_config_get_u64(cfg, "race.timeout_window_us",
+                                  &timeout_window_us);
     run_id = 0x5A17E7ull ^ (seed * 0x9E3779B97F4A7C15ull);
     if (run_id == 0)
         run_id = 1;
@@ -155,7 +167,7 @@ int prolapse_synthetic_run(prolapse_config_t *cfg)
     }
 
     while (fgets(line, sizeof(line), in)) {
-        uint64_t seq;
+        uint64_t seq, window_us;
         int mr, me, rr, re, has_override;
         prolapse_outcome_t override, outcome;
         prolapse_attempt_record_t rec;
@@ -168,8 +180,8 @@ int prolapse_synthetic_run(prolapse_config_t *cfg)
             break;
         }
         pr = parse_row(line, ++row_idx, &seq, &mr, &me, &rr, &re,
-                       &override, &has_override, note, sizeof(note),
-                       why, sizeof(why));
+                       &window_us, &override, &has_override, note,
+                       sizeof(note), why, sizeof(why));
         if (pr > 0)
             continue;
         if (pr < 0) {
@@ -179,7 +191,8 @@ int prolapse_synthetic_run(prolapse_config_t *cfg)
         }
 
         outcome = has_override ? override
-                 : prolapse_classify(mr, rr, me, re);
+                 : prolapse_classify_windowed(mr, rr, me, re, window_us,
+                                              timeout_window_us);
         memset(&rec, 0, sizeof(rec));
         rec.run_id = run_id;
         rec.seq = seq;
@@ -190,6 +203,7 @@ int prolapse_synthetic_run(prolapse_config_t *cfg)
                                      (unsigned)(row_idx & 0xFFFFu));
         rec.slot = 0;
         rec.batch_size = 1;
+        rec.window_us = window_us;
         rec.main_ret = mr;
         rec.main_err = me;
         rec.racer_ret = rr;
@@ -231,9 +245,11 @@ int prolapse_synthetic_run(prolapse_config_t *cfg)
         fclose(in);
     if (out != stdout)
         fclose(out);
-    printf("[synthetic] rows=%llu both_zero=%llu abort=%s\n",
+    printf("[synthetic] rows=%llu both_zero=%llu abort=%s "
+           "timeout_window_us=%llu\n",
            (unsigned long long)rows, (unsigned long long)both_zero,
-           rc == 1 ? "true" : "false");
+           rc == 1 ? "true" : "false",
+           (unsigned long long)timeout_window_us);
     return rc;
 }
 

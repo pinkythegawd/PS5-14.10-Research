@@ -25,6 +25,17 @@ for r in attempts:
 assert counts == {"both_zero": 3, "both_esrch": 2, "esrch_main": 10,
                   "esrch_racer": 10, "other": 15, "timeout": 2}, counts
 
+by_seq = {r["seq"]: r for r in attempts}
+derived = by_seq[39]
+assert derived["outcome"] == "timeout", derived
+assert derived["window_us"] == 6000, derived
+assert derived["main_err"] == 0 and derived["racer_err"] == 0, derived
+assert derived["main_ret"] == 0 and derived["racer_ret"] == 0, derived
+overridden = by_seq[40]
+assert overridden["outcome"] == "timeout", overridden
+assert overridden["window_us"] == 0 and overridden["main_err"] == 22, \
+    overridden
+
 notes = [r["note"] for r in attempts if r.get("note")]
 assert len(notes) == 2, f"expected 2 note rows, got {notes}"
 assert 'say "hello" \\ backslash' in notes, \

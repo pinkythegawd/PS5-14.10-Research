@@ -37,6 +37,7 @@ typedef struct {
     const char *out_path;
     const char *dead_ends_path;
     const char *synthetic_path;
+    const char *control;
     int synthetic_no_abort;
     int list_config;
 } prolapse_config_t;
@@ -89,6 +90,10 @@ int prolapse_is_esrch(int err);
 int prolapse_is_zero(int err);
 prolapse_outcome_t prolapse_classify(int main_ret, int racer_ret,
                                      int main_err, int racer_err);
+prolapse_outcome_t prolapse_classify_windowed(int main_ret, int racer_ret,
+                                              int main_err, int racer_err,
+                                              uint64_t window_us,
+                                              uint64_t threshold_us);
 const char *prolapse_outcome_name(prolapse_outcome_t outcome);
 
 /* jsonl.c */
