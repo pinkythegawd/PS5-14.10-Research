@@ -538,6 +538,7 @@ Snapshot status below; the [source repository](https://github.com/pastawithpesto
 - **p160 (Relapse primitives) also confirmed dead on the second console** — independent reproduction of our PR #32 result (54/54, scope receiver `undefined`).
 - **CSSFontFace (CVE-2026-43715) measured on the console — a hang, not a crash (2026-10-22):** the trigger is reachable from the guide (probes p446-p450), but where the write-up predicts a use-after-free the WebProcess runs out of memory and dies. The fix's client snapshot holds strong references, so nothing is freed mid-iteration; see **Finding 10**. This lead is closed.
 - **FontFace workstream items 2-5 built, hardware runs pending (2026-11-03):** stability page (N≥50 self-recycling attempts), lifetime probe (hold/drop/gc/second arms), reclaim tag read-back (`fontface_tag.html`), and the p563-shape pointer-write tag proof (`fontface_addrof.html`) are built and logic-tested in the ps5-1410 tree; all console measurements await hardware runs — no numbers are fabricated. See "Reclaim identification and pointer-write tag proof" below.
+- **FontFace seven-item refinement round built (2026-11-03):** same-object identity tag (n1=1), stability entry/restart discipline with duplicate-i denominator evidence, 6×~200 s chunked captures with pooled-stability flag, the four lifetime arms written as falsifiable hypotheses, control-arm-first session discipline on all four pages, the WeakPtrImpl reclaim-and-read +0x10 prototype with its early fit report, and the hard-vs-timing statement on the post-reclaim continuation death. See "Seven-item refinement round" below. All eleven logic-test suites green (239 checks); console runs pending.
 - **Kernel audit published** (their [KERNEL_AUDIT.md](https://github.com/pastawithpesto/PS5-14.10-Jailbreak-Research/blob/master/docs/KERNEL_AUDIT.md)): Tier-1 candidates CVE-2026-7270 (assessed in this repo), CVE-2026-45251 (poll/select UAF, not yet assessed here), and CVE-2024-43102 (umtx — patch status reopened by our PR #41: `_umtx_op` is 454 and alive; earlier "umtx" tests hit 557).
 - **Length-window audit** ([WEBKIT_LENGTH_WINDOW_AUDIT.md](WEBKIT_LENGTH_WINDOW_AUDIT.md)) — analyzed the false positive; its capacity question dissolves. The p161 probe it inspired remains correct (PR #43 fixed its blob construction) and now tests whether the correct-strings groom corrupts at all.
 
@@ -677,6 +678,70 @@ applies: "Until a self-address exists, this is a disclosure, not a corruption
 primitive." The JS face is one indirection away (through the `WeakPtrImpl`
 pointee); closing that gap is the next round's work. No fakeobj, no RIP, no
 lane-2 claim in this round.
+
+## Seven-item refinement round — identity, stability discipline, lifetime hypotheses, control-first, WeakPtrImpl +0x10 prototype (2026-11-03)
+
+Seven refinements were folded into the workstream; each is recorded in full in
+`webkit/CSSFONT_ORACLE.md` (ps5-1410 tree, "Refinement round — the seven
+items" section). **All build-side work is logic-tested only; every console
+measurement is pending hardware runs — no numbers are fabricated.**
+
+1. **Same-object identity (blocking).** `fontface_tag.html?n1=1&n2=256` tags a
+   single victim face `d0`; a hit on any `e<i>` family proves the freed chunk
+   and the reclaimed face are the same allocation (with one victim there is no
+   other freed chunk to land on), and the hit index measures reuse order.
+   Recorded in CSSFONT_ORACLE.md; hardware run decides same-face-freed-twice
+   vs two-faces-overlapping.
+2. **Stability entry and restart handling.** The stability page runs only the
+   surviving form (CSS-sheet double-reclaim on the `setStatus` entry); every
+   `FFSTAB BOOT` must produce its own `FFSTAB VERDICT`, and a spontaneous
+   mid-attempt death makes the Guide reload the same `?i=` — `stab_report.py`
+   marks the rerun `url_i_dup=1` and counts it as a crashed attempt in the
+   denominator, never silently merged.
+3. **Six ~200 s capture chunks.** `stab_report.py` takes multiple captures,
+   prints per-batch and pooled hit rates, and flags `POOLED UNSTABLE` when the
+   per-batch rates disagree.
+4. **Lifetime arms as falsifiable hypotheses.** H-hold/H-drop/H-gc/H-second
+   written before running, each with its named falsification signal in
+   `life_report.py`'s crash classes (including `died-in-second-load`).
+5. **Control arm runs first in every session; not clean = stop.** All four
+   measurement pages accept `?control=1` (free skipped; on the lifetime page
+   both frees are skipped). Reports print `CONTROL NOT CLEAN: … — stop the
+   session` on any control hit or control crash.
+6. **WeakPtrImpl reclaim-and-read +0x10 prototype.** `fontface_weakptr.html`
+   attempts two reclaims in one 8 s window on the p563 entry: the 192-byte
+   `CSSFontFace` chunk (four tagged 192-byte buffers) plus a small-class
+   (16/24/32) run and, at T+50 ms, a post-`gc()` second small batch as the
+   candidate reclaim of the freed impl chunk. Scans at 60/400/1500 ms;
+   `weakptr_report.py` classifies each attempt
+   (`pointee-read-candidate` / `pointer-reads-only` / `no-engine-writes`).
+   **Early fit report (by construction, pre-hardware):** the timing fits — the
+   whole sequence is synchronous inside the 8 s window, survival being the
+   open hardware question (the lifetime `second` arm and ng643's
+   one-successful-reclaim-per-WebProcess constraint are the decisive inputs).
+   The +0x10 pointee read itself fits **only conditionally**: it needs the
+   impl embedded by value (pointee at +0x78 of the 192-class chunk, a measured
+   slot) or an engine write into a live small-class buffer. If +0x68 is a heap
+   pointer (Finding 13's reading) and no small-buffer write appears, the path
+   does not fit with JS-readable reclaims — the impl chunk is engine-owned,
+   and ArrayBuffer zero-fills on allocation, so reclaiming a *freed* impl
+   yields a zero-read, not a leak. `pointer-reads-only` names that
+   doesn't-fit branch.
+7. **Post-reclaim continuation death: hard, not timing-dependent.** On 14.10
+   the regression form (free, no reclaim) crashed 33/33, the cross-type
+   ArrayBuffer reclaim crashed in all spray modes (Timer `RELEASE_ASSERT` on
+   cross-type garbage), and the same-type reclaim survived with the controlled
+   flip on every run. Timing selects only which allocation wins the freed
+   slot; given the slot contents the outcome is deterministic. The only
+   timing-dependent part is what closes the 8 s window later (the ~3 s load
+   timer, GC) — exactly what the lifetime arms measure.
+
+Tooling: all eleven suites green on the host (239 checks total:
+`test_cssfont_oracle.js` 20, `test_fontface_stab.js` 22,
+`test_fontface_lifetime.js` 32, `test_fontface_tag.js` 15,
+`test_fontface_addrof.js` 19, `test_fontface_weakptr.js` 26,
+`test_stab_report.py` 32, `test_life_report.py` 20, `test_tag_report.py` 12,
+`test_addr_report.py` 22, `test_weakptr_report.py` 19).
 
 ## Attribution
 
