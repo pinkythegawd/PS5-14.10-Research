@@ -753,9 +753,17 @@ int prolapse_p1_run(prolapse_config_t *cfg)
     memset(&pool, 0, sizeof(pool));
     pool.max_threads = (int)max_threads;
     if (parking_preflight(&pool, cpu_a, cfg, why, sizeof(why)) != 0) {
-        fprintf(stderr, "prolapse p1: PARKING PREFLIGHT FAILED: %s\n", why);
-        (void)pool_drain(&pool, park_timeout, why, sizeof(why));
+#ifdef PROLAPSE_HOST
+        fprintf(stderr,
+                "prolapse p1: verdict=preflight_unavailable_in_build rc=3: "
+                "%s\n", why);
+        rc = 3;
+#else
+        fprintf(stderr, "prolapse p1: verdict=preflight_failed rc=2: %s\n",
+                why);
         rc = 2;
+#endif
+        (void)pool_drain(&pool, park_timeout, why, sizeof(why));
         goto out_close;
     }
 
@@ -785,7 +793,7 @@ out_close:
     return rc;
 
 preflight_fail:
-    fprintf(stderr, "prolapse p1: PREFLIGHT FAILED: %s\n", why);
+    fprintf(stderr, "prolapse p1: verdict=preflight_failed rc=2: %s\n", why);
     if (out != stdout)
         fclose(out);
     return 2;

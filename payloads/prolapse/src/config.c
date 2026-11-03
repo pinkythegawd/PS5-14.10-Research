@@ -154,6 +154,8 @@ static int validate(prolapse_config_t *cfg)
     const char *profile = prolapse_config_get(cfg, "target.profile");
     uint64_t stop;
 
+    if (cfg->stage && strcmp(cfg->stage, "synthetic") == 0)
+        return 0;
     if (!profile || strcmp(profile, "14.00_v59") != 0) {
         fprintf(stderr,
                 "prolapse: this round only supports target.profile=14.00_v59 "
@@ -232,6 +234,8 @@ static void usage(const char *argv0)
         "      --max-threads N --set key=value --jsonl PATH --seed N\n"
         "      [--dead-ends PATH] [--loss-threshold N] [--control-rounds N]\n"
         "  P2: --stage p2 --input PATH [--jsonl PATH]\n"
+        "  synthetic (host only): --synthetic FILE [--synthetic-no-abort]\n"
+        "      [--jsonl PATH]\n"
         "  common: --list-config --help\n",
         argv0);
 }
@@ -290,6 +294,10 @@ int prolapse_config_load(prolapse_config_t *cfg, int argc, char **argv)
                 return -1;
         } else if (strcmp(a, "--jsonl") == 0 && j + 1 < argc) {
             cfg->jsonl_path = argv[++j];
+        } else if (strcmp(a, "--synthetic") == 0 && j + 1 < argc) {
+            cfg->synthetic_path = argv[++j];
+        } else if (strcmp(a, "--synthetic-no-abort") == 0) {
+            cfg->synthetic_no_abort = 1;
         } else if (strcmp(a, "--input") == 0 && j + 1 < argc) {
             cfg->input_path = argv[++j];
         } else if (strcmp(a, "--out") == 0 && j + 1 < argc) {
@@ -308,6 +316,14 @@ int prolapse_config_load(prolapse_config_t *cfg, int argc, char **argv)
         }
     }
 
+    if (cfg->synthetic_path && cfg->stage &&
+        strcmp(cfg->stage, "synthetic") != 0) {
+        fprintf(stderr, "prolapse: --synthetic conflicts with --stage %s\n",
+                cfg->stage);
+        return -1;
+    }
+    if (cfg->synthetic_path)
+        cfg->stage = "synthetic";
     if (!cfg->stage) {
         fprintf(stderr, "prolapse: --stage p1|p2 is required\n");
         usage(argv[0]);
@@ -315,12 +331,18 @@ int prolapse_config_load(prolapse_config_t *cfg, int argc, char **argv)
     }
     if (strcmp(cfg->stage, "help") == 0)
         return 0;
-    if (strcmp(cfg->stage, "p1") != 0 && strcmp(cfg->stage, "p2") != 0) {
+    if (strcmp(cfg->stage, "p1") != 0 && strcmp(cfg->stage, "p2") != 0 &&
+        strcmp(cfg->stage, "synthetic") != 0) {
         fprintf(stderr, "prolapse: unknown stage '%s'\n", cfg->stage);
         return -1;
     }
     if (strcmp(cfg->stage, "p2") == 0 && !cfg->input_path) {
         fprintf(stderr, "prolapse: --stage p2 requires --input PATH\n");
+        return -1;
+    }
+    if (strcmp(cfg->stage, "synthetic") == 0 && !cfg->synthetic_path) {
+        fprintf(stderr, "prolapse: --stage synthetic requires --synthetic "
+                "FILE\n");
         return -1;
     }
     return validate(cfg);

@@ -36,6 +36,15 @@ static void json_str_field(FILE *out, const char *key, const char *value)
     fputc('"', out);
 }
 
+static const char *clock_src(void)
+{
+#ifdef PROLAPSE_HOST
+    return "libc";
+#else
+    return "232";
+#endif
+}
+
 int prolapse_write_attempt(FILE *out, const prolapse_attempt_record_t *r)
 {
     if (!out || !r)
@@ -63,14 +72,19 @@ int prolapse_write_attempt(FILE *out, const prolapse_attempt_record_t *r)
         r->racer_ret, r->racer_err, (unsigned)r->racer_err,
         r->main_seq, r->racer_seq);
     json_str_field(out, "outcome", prolapse_outcome_name(r->outcome));
+    if (r->note && *r->note)
+        json_str_field(out, "note", r->note);
     fprintf(out,
-        ",\"frozen\":%s,\"candidate\":%s,\"control\":%s,"
+        ",\"frozen\":%s,\"candidate\":%s,\"control\":%s,\"synthetic\":%s,"
+        "\"clock_src\":\"%s\",\"sys624_unverified_on_console\":true,"
         "\"sys624_kind\":\"vm_operation_counter_ordering_token\","
         "\"sys624_main_before\":%llu,\"sys624_main_after\":%llu,"
         "\"sys624_racer_before\":%llu,\"sys624_racer_after\":%llu}\n",
         r->frozen ? "true" : "false",
         r->candidate ? "true" : "false",
         r->control ? "true" : "false",
+        r->synthetic ? "true" : "false",
+        clock_src(),
         (unsigned long long)r->sys624_main_before,
         (unsigned long long)r->sys624_main_after,
         (unsigned long long)r->sys624_racer_before,
@@ -88,9 +102,10 @@ int prolapse_write_control(FILE *out, const char *name, uint64_t attempts,
     fputs("{\"record\":\"control\"", out);
     json_str_field(out, "control", name);
     fprintf(out, ",\"attempts\":%llu,\"both_zero\":%llu,\"expected\":%llu,"
-                 "\"pass\":%s",
+                 "\"pass\":%s,\"clock_src\":\"%s\"",
             (unsigned long long)attempts, (unsigned long long)both_zero,
-            (unsigned long long)expected, pass ? "true" : "false");
+            (unsigned long long)expected, pass ? "true" : "false",
+            clock_src());
     if (detail)
         json_str_field(out, "detail", detail);
     fputs("}\n", out);

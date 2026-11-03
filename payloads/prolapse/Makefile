@@ -12,13 +12,13 @@ GEN         := python3 $(ROOT)/tools/gen_prolapse_config.py
 LEDGER_HDR  := include/prolapse_config.h
 
 SRCS        := src/main.c src/config.c src/classify.c src/jsonl.c src/sys.c \
-               src/transport.c src/p1_race.c src/p2_win.c
+               src/transport.c src/p1_race.c src/p2_win.c src/synthetic.c
 HDRS        := include/prolapse.h include/prolapse_config.h
 
 ifdef PS5_PAYLOAD_SDK
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 CFLAGS      += -Wall -Wextra -Iinclude
-LDFLAGS     += -lps5 -lkernel_sys -pthread
+LDFLAGS     += -lkernel_sys -pthread
 ELF         := prolapse_p1p2.elf
 all: $(ELF)
 $(ELF): $(SRCS) $(HDRS)
@@ -26,7 +26,7 @@ $(ELF): $(SRCS) $(HDRS)
 else ifdef PS5SDK
 CC          := $(PS5SDK)/bin/prospero-clang
 CFLAGS      := -target x86_64-sie-ps5 -Os -Wall -Wextra -Iinclude
-LDFLAGS     := -target x86_64-sie-ps5 -lps5 -lkernel_sys -pthread
+LDFLAGS     := -target x86_64-sie-ps5 -lkernel_sys -pthread
 ELF         := prolapse_p1p2.elf
 all: $(ELF)
 $(ELF): $(SRCS) $(HDRS)
@@ -72,6 +72,16 @@ check: check-gen host
 	./$(HOST_BIN) --stage p2 --input tests/fixtures/p1_frozen.jsonl \
 		--out build/out/p2.jsonl >/dev/null
 	python3 tests/check_p2.py build/out/p2.jsonl
+	./$(HOST_BIN) --synthetic tests/fixtures/synthetic_40.csv \
+		--synthetic-no-abort --jsonl build/out/synthetic.jsonl
+	python3 tests/check_synthetic.py build/out/synthetic.jsonl
+	@if ./$(HOST_BIN) --synthetic tests/fixtures/synthetic_40.csv \
+		--jsonl build/out/synthetic_abort.jsonl \
+		>build/out/synthetic_abort.out 2>build/out/synthetic_abort.err; then \
+		echo "check: synthetic both_zero abort did not fire" >&2; exit 1; \
+	fi
+	@grep -q "BOTH_ZERO ABORT" build/out/synthetic_abort.err || { \
+		echo "check: synthetic abort message missing" >&2; exit 1; }
 
 clean:
 	rm -rf build $(ELF)

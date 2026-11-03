@@ -65,6 +65,9 @@ static void test_jsonl(void)
     assert(strstr(buf, "\"outcome\":\"esrch_racer\"") != NULL);
     assert(strstr(buf, "\"sys624_kind\":\"vm_operation_counter_ordering_token\"")
            != NULL);
+    assert(strstr(buf, "\"synthetic\":false") != NULL);
+    assert(strstr(buf, "\"sys624_unverified_on_console\":true") != NULL);
+    assert(strstr(buf, "\"clock_src\":\"libc\"") != NULL);
 }
 
 static void test_dead_end(void)

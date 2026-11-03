@@ -29,6 +29,15 @@ typedef struct {
     } lines[P2_MAX_LINES];
 } p2_round_t;
 
+static const char *clock_src(void)
+{
+#ifdef PROLAPSE_HOST
+    return "libc";
+#else
+    return "232";
+#endif
+}
+
 static const char *find_key(const char *line, const char *key)
 {
     char pat[64];
@@ -202,8 +211,9 @@ static int flush_round(FILE *out, const p2_round_t *r, uint64_t *candidates,
             "{\"record\":\"p2_round\",\"round_id\":%llu,\"strategy\":\"",
             (unsigned long long)r->round_id);
     prolapse_json_escape(out, r->strategy);
-    fprintf(out, "\",\"batch_size\":%u,\"lines\":%u,\"frozen\":true}\n",
-            r->batch_size ? r->batch_size : r->count, r->count);
+    fprintf(out, "\",\"batch_size\":%u,\"lines\":%u,\"frozen\":true,"
+            "\"clock_src\":\"%s\"}\n",
+            r->batch_size ? r->batch_size : r->count, r->count, clock_src());
 
     for (i = 0; i < r->count; i++) {
         const int both_zero = line_is_both_zero(r, i);
@@ -256,7 +266,7 @@ static int flush_round(FILE *out, const p2_round_t *r, uint64_t *candidates,
                 "\"main_seq\":%d,\"racer_seq\":%d,"
                 "\"both_zero\":%s,\"winner_id\":%u,\"winner_slot\":%d,"
                 "\"winner_role\":\"%s\",\"false_winner_suspect\":%s,"
-                "\"suspect_err\":%d}\n",
+                "\"suspect_err\":%d,\"clock_src\":\"%s\"}\n",
                 r->lines[i].slot, (unsigned)r->lines[i].id,
                 (unsigned)r->lines[i].id,
                 r->lines[i].main_ret, r->lines[i].main_err,
@@ -270,7 +280,7 @@ static int flush_round(FILE *out, const p2_round_t *r, uint64_t *candidates,
                 both_zero ? (unsigned)r->lines[i].id : 0,
                 both_zero ? r->lines[i].slot : -1,
                 both_zero ? (second_is_racer ? "racer" : "main") : "none",
-                suspect ? "true" : "false", suspect_err);
+                suspect ? "true" : "false", suspect_err, clock_src());
         if (winner) {
             fprintf(out,
                     "{\"record\":\"p2_winner\",\"round_id\":%llu,"
@@ -279,9 +289,9 @@ static int flush_round(FILE *out, const p2_round_t *r, uint64_t *candidates,
             prolapse_json_escape(out, r->strategy);
             fprintf(out,
                     "\",\"slot\":%d,\"winner_id\":%u,"
-                    "\"winner_role\":\"%s\"}\n",
+                    "\"winner_role\":\"%s\",\"clock_src\":\"%s\"}\n",
                     r->lines[i].slot, (unsigned)r->lines[i].id,
-                    second_is_racer ? "racer" : "main");
+                    second_is_racer ? "racer" : "main", clock_src());
         }
     }
     (void)round_has_candidate;
@@ -363,10 +373,10 @@ int prolapse_p2_run(prolapse_config_t *cfg)
     fprintf(out,
             "{\"record\":\"p2_summary\",\"input\":\"%s\","
             "\"rounds_seen\":%llu,\"frozen_candidates\":%llu,"
-            "\"false_winner_suspects\":%llu}\n",
+            "\"false_winner_suspects\":%llu,\"clock_src\":\"%s\"}\n",
             cfg->input_path, (unsigned long long)rounds,
             (unsigned long long)candidates,
-            (unsigned long long)suspects);
+            (unsigned long long)suspects, clock_src());
 
     if (in != stdin)
         fclose(in);

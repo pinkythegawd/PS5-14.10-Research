@@ -39,7 +39,10 @@ make check            # generated ledger header + C core tests + P2 fixture
 ```
 
 `make check` verifies the ledger header is not stale, the classifier and JSONL
-writer, the config/`--set` contract, and the P2 parser on a frozen fixture.
+writer, the config/`--set` contract, the P2 parser on a frozen fixture, and the
+synthetic harness: the 42-row fixture exercises all six outcomes, the
+`both_zero` abort, the histogram, and a note containing a quote and a backslash
+so JSON escaping is proven.
 
 ## P1 (first slice: preflights + serialized control)
 
@@ -73,6 +76,14 @@ parked worker with `SO_LINGER {0,0}`.
 
 Any failure aborts before racing. A failed parking preflight is a stop
 condition: later numbers would be meaningless.
+
+Exit codes distinguish the two failure kinds with a one-line verdict:
+
+- `2` = `verdict=preflight_failed`: a real failure on a console where the
+  check ran but did not pass.
+- `3` = `verdict=preflight_unavailable_in_build`: the check cannot run in this
+  build. On the host build, preflight 4 (linger parking) always exits 3 because
+  AIO syscalls are ENOSYS by design.
 
 ### Controls (run before any race)
 
@@ -108,6 +119,12 @@ in `sys624_*` fields and labelled `vm_operation_counter_ordering_token`; it is
 not used as a timer. Extra fields include `round_id`, `slot`, `batch_size`,
 `main_seq`, `racer_seq`, `frozen`, `candidate`, and `control`.
 
+Every record carries `clock_src`: `"232"` on console (raw `clock_gettime(232)`),
+`"libc"` on the host build (libc `clock_gettime`). Synthetic rows additionally
+carry `synthetic:true`. The `sys624_*` fields are kept but flagged
+`sys624_unverified_on_console:true` on every attempt record; they are removed
+only after the first console run confirms they move.
+
 The `frozen:true`/`frozen_round` machinery exists for P2 but stays dormant
 this round: the slice produces no races, so nothing is frozen.
 
@@ -136,12 +153,40 @@ these marked.
 
 `--jsonl` is also accepted as the P2 output path when `--out` is absent.
 
+## Synthetic mode (host build only)
+
+`--synthetic <file>` feeds a CSV table through `prolapse_classify` and the
+JSONL writer with no AIO or race syscalls, so the classifier, writer, escaping,
+histogram and `both_zero` abort are exercised without a console:
+
+```sh
+./build/prolapse_host --synthetic tests/fixtures/synthetic_40.csv \
+  --synthetic-no-abort --jsonl /tmp/synthetic.jsonl
+```
+
+CSV columns: `seq,main_ret,main_err,racer_ret,racer_err[,outcome][,note]`.
+The optional `outcome` column overrides the classifier (used for `timeout`
+rows, which classification alone cannot produce); the `note` column is free
+text — everything after its comma is kept verbatim, commas included, and goes
+through the JSON escaper. Blank lines, `#` comments, and a `seq,...` header
+line are skipped. Every row is emitted with `synthetic:true`,
+`strategy:"synthetic"`, and zeroed timers, plus a closing `control` summary.
+
+Any `both_zero` row aborts the run with exit 1 and
+`synthetic: BOTH_ZERO ABORT` on stderr, mirroring the P1 control stop rule;
+`--synthetic-no-abort` disables the abort so a fixture containing `both_zero`
+rows can be classified end to end. `make check` runs both modes against
+`tests/fixtures/synthetic_40.csv` (42 rows: 3 `both_zero`, 2 `both_esrch`, all
+six outcomes, and a note containing a quote and a backslash).
+
 ## Acceptance status
 
-Host checks are green. Console acceptance for the P1 slice requires the SDK, a
-14.00 V59 console, and capture of the four preflights, the serialized control
-at >=500 attempts with its histogram and zero `both_zero`, the generation
-control, and the `--max-threads 2` cap trip. Strategy acceptance (1000 attempts
-per strategy, one in-run dead-end append, three frozen `both_zero` events
-through P2) is deferred with the strategies. Those numbers are not fabricated
-here.
+Host checks are green, including the synthetic harness (all six outcomes,
+`both_zero` abort, histogram, escaping) and the exit-code split (host preflight
+4 prints `verdict=preflight_unavailable_in_build` and exits 3). Console
+acceptance for the P1 slice requires the SDK, a 14.00 V59 console, and capture
+of the four preflights, the serialized control at >=500 attempts with its
+histogram and zero `both_zero`, the generation control, and the
+`--max-threads 2` cap trip. Strategy acceptance (1000 attempts per strategy,
+one in-run dead-end append, three frozen `both_zero` events through P2) is
+deferred with the strategies. Those numbers are not fabricated here.

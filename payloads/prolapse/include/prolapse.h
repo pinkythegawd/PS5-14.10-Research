@@ -36,6 +36,8 @@ typedef struct {
     const char *input_path;
     const char *out_path;
     const char *dead_ends_path;
+    const char *synthetic_path;
+    int synthetic_no_abort;
     int list_config;
 } prolapse_config_t;
 
@@ -66,6 +68,8 @@ typedef struct {
     int frozen;
     int candidate;
     int control;
+    int synthetic;
+    const char *note;
 } prolapse_attempt_record_t;
 
 /* config.c */
@@ -132,6 +136,7 @@ int prolapse_transport_release(prolapse_transport_t *t, char *why,
                                size_t why_len);
 int prolapse_transport_release_peer(int *peer_fd, char *why, size_t why_len);
 
-/* p1_race.c / p2_win.c */
+/* p1_race.c / p2_win.c / synthetic.c */
 int prolapse_p1_run(prolapse_config_t *cfg);
 int prolapse_p2_run(prolapse_config_t *cfg);
+int prolapse_synthetic_run(prolapse_config_t *cfg);

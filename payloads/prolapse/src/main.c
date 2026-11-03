@@ -20,21 +20,31 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    printf("prolapse: stage=%s profile=%s strategy=%s rounds=%s batch=%s "
-           "max_threads=%s stop_on_first_win=%s\n",
-           cfg.stage,
-           prolapse_config_get(&cfg, "target.profile"),
-           prolapse_config_get(&cfg, "race.strategy"),
-           prolapse_config_get(&cfg, "race.rounds"),
-           prolapse_config_get(&cfg, "race.batch"),
-           prolapse_config_get(&cfg, "race.max_threads"),
-           prolapse_config_get(&cfg, "race.stop_on_first_win"));
+    if (strcmp(cfg.stage, "synthetic") != 0) {
+        printf("prolapse: stage=%s profile=%s strategy=%s rounds=%s batch=%s "
+               "max_threads=%s stop_on_first_win=%s\n",
+               cfg.stage,
+               prolapse_config_get(&cfg, "target.profile"),
+               prolapse_config_get(&cfg, "race.strategy"),
+               prolapse_config_get(&cfg, "race.rounds"),
+               prolapse_config_get(&cfg, "race.batch"),
+               prolapse_config_get(&cfg, "race.max_threads"),
+               prolapse_config_get(&cfg, "race.stop_on_first_win"));
+    }
 
-    if (strcmp(cfg.stage, "p1") == 0)
+    if (cfg.synthetic_path) {
+#ifdef PROLAPSE_HOST
+        rc = prolapse_synthetic_run(&cfg);
+#else
+        fprintf(stderr, "prolapse: --synthetic is host-only\n");
+        rc = 2;
+#endif
+    } else if (strcmp(cfg.stage, "p1") == 0) {
         rc = prolapse_p1_run(&cfg);
-    else
+    } else {
         rc = prolapse_p2_run(&cfg);
+    }
 
     printf("prolapse: stage=%s exit=%d\n", cfg.stage, rc);
-    return rc == 0 ? 0 : 1;
+    return rc;
 }
