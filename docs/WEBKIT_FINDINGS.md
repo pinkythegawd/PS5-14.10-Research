@@ -440,6 +440,74 @@ manuals.playstation.net --dns-log-queries --default p450-layout-in-getter.js`) a
 Guide. `C-returned-got=1` arrives; `D-issued` arrives; the console then reports the memory message
 and the page does not come back.
 
+## Finding 11: The CSS-connected trigger crashes 33/33, and a CSS-sheet double-reclaim turns the stale `setStatus()` into a controlled `status` write (2026-10-24)
+
+Finding 10 closed this lead on five probes (p446-p450) whose trigger face was
+JS-created (`new FontFace("OracleTrigger", …)`). The oracle captures on the
+same 14.10 console with the exact regression shape from WebKit bug 313577
+(`fonts/font-face-load-crash.html`, a **CSS-connected** `@font-face` face)
+change that conclusion; this finding supersedes Finding 10 and its body is
+left untouched as the record of the earlier probes. Hardware measurements are
+in the ps5-1410 tree, `webkit/CSSFONT_ORACLE.md` (captures 2026-10-22 and
+2026-10-24).
+
+### Form 1 — the CSS-connected trigger crashes deterministically (33/33)
+
+`fontface_regression.html` implements the regression shape: the trigger face
+is parsed from an `@font-face` rule, not created by script. The control
+(`?control=1`, no getter) logs `BOOT` → `FACE-FOUND` → `LOAD-CALL` →
+`LOAD-RETURNED` → `HB 1` and does not crash. The trigger logs `BOOT` →
+`FACE-FOUND` → `LOAD-CALL` → `GETTER-ENTERED` → `GETTER-EXITED` and then
+nothing: no `LOAD-RETURNED`, no heartbeat, no verdict. The Guide reloaded it
+**33 times in about 20 s**; the host log shows 33 GETs, each followed by the
+same five beacons and then the next GET. A deterministic WebProcess death on
+the exact regression — not the hang Finding 10 saw with the JS-created face.
+
+### Form 2 — double-reclaim yields a controlled `status` write (2/2, 8 s survival)
+
+`fontface_double_css.html?n1=256&n2=256`: inside the `.then` getter, a first
+`<style>` sheet with 256 `@font-face` rules is removed, freeing its
+`CSSFontFace` objects synchronously (no JS wrappers hold them); a second sheet
+then creates 256 faces with `src: local(__no_such_font__)` and loads them
+(`error=256`). When the stale `setStatus(Success)` resumes:
+
+```text
+FIRST 256 no-js-wrappers
+FREED
+SECOND 256 unloaded=0 loading=0 loaded=0 error=256 other=0
+GETTER-EXITED
+LOAD-RETURNED
+SECOND-POST unloaded=0 loading=0 loaded=1 error=255 other=0
+SECOND-FINAL unloaded=0 loading=0 loaded=1 error=255 other=0
+VERDICT survived-8s
+```
+
+Exactly **one** second-batch face changes `error` → `loaded`, 2/2 runs, both
+surviving the 8 s verdict. A controlled status-field write into a reclaimed
+live `CSSFontFace`. The JS-wrapper double variant (`fontface_double.html` with
+GC pressure) never freed the first batch (`SECOND` stayed `error=256`), and an
+`ArrayBuffer` spray (`fontface_groom.html`, 864 buffers, `none`/`zero`/
+`pattern` fills) never reclaimed the slot — every spray mode still crashed
+after `GETTER-EXITED`.
+
+### What the two forms establish, and how they reconcile with the public repos
+
+- The UAF is live on 14.10 and the freed `CSSFontFace` is reclaimable
+  same-type. The stale write is controlled but **1 byte** (`m_status`, value 3)
+  into a live object; no address or other value is chosen. Not arbitrary R/W;
+  no lane gate.
+- The `ArrayBuffer` failure reconciles with pastawithpesto's p458 (their
+  `CONFIRMED_VULNS.md`, recorded in the dedup pass below): on the
+  `setStatus()` trigger, a sentinel-filled cross-type chunk dies at the Timer
+  `RELEASE_ASSERT` (`m_thread` at offset 176), so the groom crash is that
+  assert, not proof of an isolated allocator. Same-type reclaims survive
+  because offset 176 holds a valid `Timer`.
+- Remaining gap per the dedup pass: neither public repo has a self-address
+  leak from this bug (ZigZagBoi1's Finding 13 leaks two *engine* pointers via
+  the `FontFaceSet::load()` entry; pastawithpesto has no FontFace
+  addrof/fakeobj). Next measurements: stability (N≥50), lifetime, and the
+  allocator/size-class/tag question.
+
 ## Entry Method
 
 The PS5 browser is reachable without hardware modification:
@@ -471,6 +539,85 @@ Snapshot status below; the [source repository](https://github.com/pastawithpesto
 - **CSSFontFace (CVE-2026-43715) measured on the console — a hang, not a crash (2026-10-22):** the trigger is reachable from the guide (probes p446-p450), but where the write-up predicts a use-after-free the WebProcess runs out of memory and dies. The fix's client snapshot holds strong references, so nothing is freed mid-iteration; see **Finding 10**. This lead is closed.
 - **Kernel audit published** (their [KERNEL_AUDIT.md](https://github.com/pastawithpesto/PS5-14.10-Jailbreak-Research/blob/master/docs/KERNEL_AUDIT.md)): Tier-1 candidates CVE-2026-7270 (assessed in this repo), CVE-2026-45251 (poll/select UAF, not yet assessed here), and CVE-2024-43102 (umtx — patch status reopened by our PR #41: `_umtx_op` is 454 and alive; earlier "umtx" tests hit 557).
 - **Length-window audit** ([WEBKIT_LENGTH_WINDOW_AUDIT.md](WEBKIT_LENGTH_WINDOW_AUDIT.md)) — analyzed the false positive; its capacity question dissolves. The p161 probe it inspired remains correct (PR #43 fixed its blob construction) and now tests whether the correct-strings groom corrupts at all.
+
+## Dedup pass: FontFace addrof/fakeobj in the two public repos (2026-11-03)
+
+One pass over [ZigZagBoi1/PS5-14.10-Research](https://github.com/ZigZagBoi1/PS5-14.10-Research)
+(origin of this fork, fetched 2026-11-03) and
+[pastawithpesto/PS5-14.10-Jailbreak-Research](https://github.com/pastawithpesto/PS5-14.10-Jailbreak-Research)
+(master, fetched 2026-11-03), looking for FontFace addrof/fakeobj and
+CVE-2026-43715 exploitation notes.
+
+### ZigZagBoi1: ArrayBuffer reclaim + engine-pointer disclosure (PR #165)
+
+Merged PR #165 (`ng643/webkit/fontface-reclaim-leak`) measures the
+`FontFaceSet::load()` entry point (their Finding 12, 2026-10-24) through to a
+reclaim (their Finding 13, 2026-10-29,
+`docs/FONTFACE_RECLAIM_LEAK_14_10.md`, commits `6a9e521`, `da7b1b0`,
+`f71893f`, `5f2ea83`, `481b469`, `5cb089e`, `8c45340`):
+
+- A **192-byte `ArrayBuffer` backing store** takes the freed `CSSFontFace`
+  chunk when the spray runs inside the `then` getter after `style.remove()`
+  (`P563-HIT-b19-s192-o0-n9`); the no-free control is byte-clean.
+- The engine continuation then writes **two live heap pointers** into the
+  buffer: `+0x00 = 1` (the `RefCounted` counter), `+0x58` (a `WeakHashSet`
+  impl, from `addClient()`), `+0x68` (the `WeakPtr` impl). Heap-churn and
+  navigation arms move both qwords, so they are addresses.
+- p564 hands the object back: a template carrying those engine pointers at
+  `+0x58`/`+0x68` is accepted, the load resolves, the page survives. Poisoning
+  `+0x30`, `+0x58` or `+0x68` with `0x4141…` kills the page — those slots are
+  dereferenced.
+- Their explicit conclusion: **the leaked values are engine addresses, not the
+  address of script memory — addrof is NOT established**, and no fakeobj is
+  claimed. "Until a self-address exists, this is a disclosure, not a
+  corruption primitive."
+- Constraints: one successful reclaim per WebProcess; long family names
+  (256-2000 chars) die after the getter.
+- They retract the earlier "ArrayBuffer data does not land in this allocator"
+  claim: `Source/cmake/OptionsPlayStation.cmake` leaves `USE_ISO_MALLOC` off,
+  so the `DECLARE_ALLOCATOR_WITH_HEAP_IDENTIFIER` isolation does not hold on
+  this port.
+
+### pastawithpesto: 43715 confirmed on device, blocked by a Timer assert
+
+`docs/CONFIRMED_VULNS.md` (master): **CVE-2026-43715 — CONFIRMED on device,
+BLOCKED by Timer RELEASE_ASSERT.**
+
+- p458 measured the `CSSFontFace::setStatus()` path: the `.then` getter fires
+  during `iterateClients`; an ArrayBuffer sentinel spray is read back by the
+  engine (the sentinel bytes land in the freed object), and the stale
+  `m_status` write (offset 130, 1 byte, `Success(3)`) is observed on a
+  same-type spray face (`loadedIdx:[55]`).
+- Blocker: `setStatus(Success)` unconditionally calls
+  `m_timeoutTimer.stop()` → `Timer.cpp:469`
+  `RELEASE_ASSERT(canCurrentThreadAccessThreadLocalData(m_thread))`. The
+  `Timer` sits at offsets 144-191, `m_thread` (`Ref<Thread>`) at 176; spray
+  garbage there fails the assert. Same-type groom survives but the 1-byte
+  `m_status` write is harmless (no secondary corruption).
+- Their unblock conditions: leak `Thread::current()` to forge a valid Timer at
+  176, or find a Timer-free `setStatus()` path (they state none exists for
+  Success/Failure).
+- Verdict table: 43715 = **DoS-only**. Their `docs/bugs/cssfontface-uaf.md`
+  contains an exploitation *plan* (StructureID corruption → type confusion →
+  addrof/fakeobj) but no measured addrof/fakeobj from this bug.
+- Their exploitation progress sits on the **Canvas lane** (CVE-2026-43720):
+  "R/W CONFIRMED", same-type reclaim with all 12 Canvas2D APIs working
+  through a stale alias (V573), state-buffer reclaim (V587/V589).
+
+### What this means for this workstream
+
+1. **No FontFace addrof or fakeobj exists in either public repo.** The
+   absence is recorded, not assumed.
+2. Both repos converge on the allocator question: IsoHeap/Gigacage are off on
+   14.10, ArrayBuffer backing stores share the bmalloc heap, and a 192-byte
+   buffer reclaims the freed `CSSFontFace` — with the `FontFaceSet::load()`
+   trigger (Finding 13) and observed via the sentinel crash on the
+   `setStatus()` trigger (p458). The "sole 192B occupant" line in their table
+   is contradicted by their own p458 evidence.
+3. The two known obstacles to weaponizing the reclaim are, per the public
+   measurements: (a) the leaked pointers are engine-owned (no self-address
+   yet), and (b) the `setStatus` continuation dies on the forged `m_thread`
+   unless a valid `Thread::current()` lands at offset 176.
 
 ## Attribution
 
