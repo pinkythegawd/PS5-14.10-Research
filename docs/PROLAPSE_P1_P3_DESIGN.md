@@ -407,6 +407,10 @@ need a zone.
 - Bounded parked-thread pool.
 - `SO_LINGER {0,0}` releases a parked thread on demand.
 - `--max-threads` default 64; exceeding the cap fails the run loudly.
+- The cap trip is validated in-build by the cap control (`--control cap`):
+  `max_threads + 2` no-op assignments, the last two must trip; no AIO syscall
+  is issued by the no-op jobs; host-verifiable (cap-only mode skips preflight
+  4).
 - Drain to zero at teardown, asserted before P2's frozen pass and before exit.
 - Every round line prints `parked_live`.
 
@@ -432,6 +436,20 @@ need a zone.
 When a strategy crosses its losing threshold, the run appends the entry to
 `docs/DEAD_ENDS.md` as a side effect: strategy, attempts, wins, p99 window, cap
 hits. It is not reconstructed from logs later.
+
+### A7 — exit-code mapping (approved 2026-11-03)
+
+| rc | meaning |
+|---:|---|
+| 0 | success |
+| 1 | synthetic abort: `both_zero` row in `--synthetic` (host only) |
+| 2 | `preflight_failed` (real console preflight failure), `serialized_control_failed`, `cap_control_failed`, or config/drain failure |
+| 3 | `preflight_unavailable_in_build` (host build: preflight 4 cannot run; AIO is ENOSYS by design) |
+| 4 | `generation_control_failed`: the bumped-generation delete did not reproduce `0x80020003` |
+
+Every failing path prints a one-line `verdict=... rc=N` on stderr. Codes 0-3
+are frozen as of this amendment; rc=4 is reserved for the generation control
+only.
 
 ## 11. P1/P2 implementation scope (this round)
 

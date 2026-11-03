@@ -97,7 +97,11 @@ static void *worker_main(void *arg)
                 __atomic_store_n(&job->entered, 1, __ATOMIC_RELEASE);
                 job->s624_in = prolapse_vm_counter();
                 job->t_start_us = prolapse_now_us();
-                job->ret = prolapse_aio_delete(job->ids, job->n, job->errs);
+                if (job->n > 0)
+                    job->ret = prolapse_aio_delete(job->ids, job->n,
+                                                   job->errs);
+                else
+                    job->ret = 0;
                 job->t_end_us = prolapse_now_us();
                 job->s624_out = prolapse_vm_counter();
             }
@@ -624,6 +628,74 @@ static int generation_control(p1_pool_t *pool, const prolapse_config_t *cfg,
     return 0;
 }
 
+static int want_control(const char *control, const char *name)
+{
+    return !control || strcmp(control, "all") == 0 ||
+           strcmp(control, name) == 0;
+}
+
+static int cap_control(p1_pool_t *pool, int cpu, FILE *out, char *why,
+                       size_t why_len)
+{
+    p1_job_t *jobs[P1_MAX_WORKERS + 2];
+    int n_assign = pool->max_threads + 2;
+    uint64_t hits_before = pool->cap_hits;
+    uint64_t cap_delta;
+    int i;
+
+    memset(jobs, 0, sizeof(jobs));
+    for (i = 0; i < n_assign; i++) {
+        p1_job_t *job = NULL;
+        int index = pool_assign(pool, cpu, &job);
+        if (i < pool->max_threads) {
+            if (index < 0) {
+                snprintf(why, why_len,
+                         "cap control: assignment %d/%d failed before the cap",
+                         i + 1, n_assign);
+                goto release;
+            }
+            jobs[i] = job;
+        } else if (index >= 0) {
+            snprintf(why, why_len,
+                     "cap control: assignment %d/%d succeeded; the cap did "
+                     "not trip", i + 1, n_assign);
+            goto release;
+        }
+    }
+    cap_delta = pool->cap_hits - hits_before;
+    if (cap_delta < 2) {
+        snprintf(why, why_len,
+                 "cap control: cap_hits advanced by %llu, expected >=2",
+                 (unsigned long long)cap_delta);
+        goto release;
+    }
+    for (i = 0; i < pool->max_threads; i++)
+        __atomic_store_n(&jobs[i]->go, 1, __ATOMIC_RELEASE);
+    for (i = 0; i < pool->max_threads; i++) {
+        if (pool_wait_done(jobs[i], 1000000) != 1) {
+            snprintf(why, why_len,
+                     "cap control: no-op worker %d did not finish", i);
+            return -1;
+        }
+    }
+    if (prolapse_write_control(out, "cap", (uint64_t)n_assign, cap_delta, 2,
+                               1,
+                               "max_threads+2 assignments must trip the cap")
+        != 0) {
+        snprintf(why, why_len, "JSONL write failed");
+        return -1;
+    }
+    printf("[control] cap PASS max_threads=%d assignments=%d "
+           "cap_hits_delta=%llu\n", pool->max_threads, n_assign,
+           (unsigned long long)cap_delta);
+    return 0;
+
+release:
+    for (i = 0; i < n_assign && jobs[i]; i++)
+        __atomic_store_n(&jobs[i]->go, 1, __ATOMIC_RELEASE);
+    return -1;
+}
+
 static int parking_preflight(p1_pool_t *pool, int cpu,
                              const prolapse_config_t *cfg, char *why,
                              size_t why_len)
@@ -752,22 +824,32 @@ int prolapse_p1_run(prolapse_config_t *cfg)
 
     memset(&pool, 0, sizeof(pool));
     pool.max_threads = (int)max_threads;
-    if (parking_preflight(&pool, cpu_a, cfg, why, sizeof(why)) != 0) {
+    if (!(cfg->control && strcmp(cfg->control, "cap") == 0)) {
+        if (parking_preflight(&pool, cpu_a, cfg, why, sizeof(why)) != 0) {
 #ifdef PROLAPSE_HOST
-        fprintf(stderr,
-                "prolapse p1: verdict=preflight_unavailable_in_build rc=3: "
-                "%s\n", why);
-        rc = 3;
+            fprintf(stderr,
+                    "prolapse p1: verdict=preflight_unavailable_in_build "
+                    "rc=3: %s\n", why);
+            rc = 3;
 #else
-        fprintf(stderr, "prolapse p1: verdict=preflight_failed rc=2: %s\n",
-                why);
-        rc = 2;
+            fprintf(stderr, "prolapse p1: verdict=preflight_failed rc=2: "
+                    "%s\n", why);
+            rc = 2;
 #endif
-        (void)pool_drain(&pool, park_timeout, why, sizeof(why));
-        goto out_close;
+            (void)pool_drain(&pool, park_timeout, why, sizeof(why));
+            goto out_close;
+        }
     }
-
-    if (!cfg->control || strcmp(cfg->control, "generation") != 0) {
+    if (want_control(cfg->control, "cap")) {
+        if (cap_control(&pool, cpu_a, out, why, sizeof(why)) != 0) {
+            fprintf(stderr,
+                    "prolapse p1: verdict=cap_control_failed rc=2: %s\n",
+                    why);
+            rc = 2;
+            goto drain;
+        }
+    }
+    if (want_control(cfg->control, "serialized")) {
         if (serialized_control(&pool, cfg, cpu_a, out, run_id, why,
                                sizeof(why)) != 0) {
             fprintf(stderr,
@@ -777,13 +859,13 @@ int prolapse_p1_run(prolapse_config_t *cfg)
             goto drain;
         }
     }
-    if (!cfg->control || strcmp(cfg->control, "serialized") != 0) {
+    if (want_control(cfg->control, "generation")) {
         if (generation_control(&pool, cfg, cpu_a, out, why,
                                sizeof(why)) != 0) {
             fprintf(stderr,
-                    "prolapse p1: verdict=generation_control_failed rc=2: "
+                    "prolapse p1: verdict=generation_control_failed rc=4: "
                     "%s\n", why);
-            rc = 2;
+            rc = 4;
             goto drain;
         }
     }

@@ -159,9 +159,10 @@ static int validate(prolapse_config_t *cfg)
         return 0;
     if (strcmp(control, "all") != 0 &&
         strcmp(control, "serialized") != 0 &&
-        strcmp(control, "generation") != 0) {
+        strcmp(control, "generation") != 0 &&
+        strcmp(control, "cap") != 0) {
         fprintf(stderr, "prolapse: bad --control '%s' "
-                "(want all|serialized|generation)\n", control);
+                "(want all|serialized|generation|cap)\n", control);
         return -1;
     }
     if (!profile || strcmp(profile, "14.00_v59") != 0) {
@@ -241,7 +242,7 @@ static void usage(const char *argv0)
         "  P1: --strategy all|split_barrier|same_barrier|split_stagger\n"
         "      --rounds N --stop-on-first-win|--no-stop-on-first-win\n"
         "      --max-threads N --set key=value --jsonl PATH --seed N\n"
-        "      --control all|serialized|generation\n"
+        "      --control all|serialized|generation|cap\n"
         "      [--dead-ends PATH] [--loss-threshold N] [--control-rounds N]\n"
         "  P2: --stage p2 --input PATH [--jsonl PATH]\n"
         "  synthetic (host only): --synthetic FILE [--synthetic-no-abort]\n"

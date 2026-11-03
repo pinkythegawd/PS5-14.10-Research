@@ -42,8 +42,15 @@ The P1-slice Makefile (4663656) linked `-lps5 -lkernel_sys -pthread`; the
   ps5-payload-dev/sdk contains it: not in git history (v0.31–v0.45; no path
   ever matched `*libps5*` or `*PS5*`, no `.a` file ever tracked), not in the
   oldest release zip (v0.23), not in v0.31, not in v0.45. The other lineage
-  (PS5Dev/PS5SDK) produces no libps5.a either (dlsym-based CRT). The flag was
-  inert cargo from `tools/v1360-dumper/Makefile`.
+  (PS5Dev/PS5SDK) produces no libps5.a either (dlsym-based CRT).
+- **Historical origin of the `-lps5` flag is unknown.** The pre-reinstall SDK
+  prefix is gone and no archive of it was kept, so why the flag was ever
+  written cannot be established. The functional proof is the 52-symbol
+  accounting above: the post-change ELF's undefined set resolves entirely to
+  the `libkernel_sys` trampoline `0x14054` and the `libSceLibcInternal`
+  trampoline `0x3269c`, with zero unresolved symbols. Do not re-open this
+  item without new evidence (a recovered pre-change ELF or an SDK artifact
+  containing `libps5.a`).
 - **The pre-change link line could never produce an ELF in this toolchain.**
   Re-running it against v0.45 (2026-11-03) fails at link:
   `ld.lld: error: unable to find library -lps5`. There is therefore no
